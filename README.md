@@ -9,8 +9,7 @@
 [![macOS 26+](https://img.shields.io/badge/macOS-26%2B-black.svg)](https://www.apple.com/macos/)
 
 RemoteDeskRDP is a native, open-source connection manager for macOS. It keeps
-RDP, VNC, SSH, SFTP and Mosh profiles in one place and also provides direct
-access to S3-compatible and OpenStack Swift object storage.
+RDP, VNC, SSH, SFTP and Mosh profiles in one place.
 
 The interface is available in German and English. Credentials stay in the
 macOS Keychain; profile files never contain passwords.
