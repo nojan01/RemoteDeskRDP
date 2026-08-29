@@ -1,0 +1,51 @@
+[package]
+name = "remotedeskrdp"
+version = "0.6.3"
+description = "Standalone Remote Desktop client for macOS"
+authors = ["Norbert Jander"]
+license = "MIT"
+repository = "https://github.com/nojan01/RemoteDeskRDP"
+homepage = "https://github.com/nojan01/RemoteDeskRDP"
+edition = "2021"
+
+[lib]
+name = "remotedeskrdp_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-deep-link = "2.4.9"
+futures-util = "0.3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "time"] }
+tokio-tungstenite = "0.28"
+portable-pty = "^0.9.0"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+quick-xml = { version = "0.38", features = ["serialize"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+security-framework-sys = "2"
+# Bereits über tao im Abhängigkeitsbaum. Direkt eingebunden, weil Tauris
+# `minimize()` das Fenster auf macOS nachweislich nicht zuverlässig einklappt:
+# der Aufruf meldet Ok, das Fenster bleibt aber stehen. Wir rufen daher
+# `miniaturize:` selbst auf.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder", "NSApplication"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

@@ -1,0 +1,47 @@
+{
+  "name": "remotedeskrdp",
+  "private": true,
+  "version": "0.6.3",
+  "description": "Native macOS connection manager for RDP, VNC, SSH, SFTP and Mosh",
+  "license": "MIT",
+  "author": "Norbert Jander",
+  "homepage": "https://github.com/nojan01/RemoteDeskRDP#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nojan01/RemoteDeskRDP.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nojan01/RemoteDeskRDP/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run verify:locales && tsc --noEmit && vite build",
+    "verify:locales": "node scripts/verify-locales.mjs",
+    "build:rdp-backend": "bash scripts/build-freerdp-backend.sh",
+    "verify:rdp-backend": "node scripts/verify-rdp-backend.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "npm run verify:rdp-backend && npm run sign:rdp-backend && tauri build",
+    "sign:rdp-backend": "bash scripts/sign-freerdp-backend.sh",
+    "notarize": "bash scripts/notarize.sh"
+  },
+  "dependencies": {
+    "@novnc/novnc": "^1.7.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-deep-link": "^2.4.9",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "solid-js": "^1.9.3"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "~6.0.3",
+    "vite": "^8.1.0",
+    "vite-plugin-solid": "^2.11.12"
+  }
+}

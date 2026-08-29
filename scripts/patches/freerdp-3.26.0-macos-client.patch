@@ -1,0 +1,1797 @@
+Anpassungen an FreeRDP 3.26.0 für RemoteDesk
+============================================
+
+Erzeugt gegen den unveränderten Stand des Tags 3.26.0. Wird von
+scripts/build-freerdp-backend.sh angewendet, nachdem die betroffenen Dateien
+per `git checkout --` zurückgesetzt wurden.
+
+1. scripts/bundle-mac-os.sh
+   Das Bundling-Skript baut den nativen Cocoa-Client nicht mit. Ergänzt
+   -DWITH_CLIENT_MAC=ON, damit MacFreeRDP als Rückfall zur Verfügung steht.
+
+2. client/Mac/cli/MainMenu.xib, client/Mac/cli/AppDelegate.{h,m}
+   Das Fenster des Cocoa-Clients war auf 1024x768 festgenagelt (minSize gleich
+   maxSize), und die Sitzungsansicht wurde ohne Autoresizing-Maske eingehängt,
+   wuchs also nie mit. Die Obergrenze entfällt, die Untergrenze sinkt auf
+   640x480, und die Ansicht folgt dem Fenster. Zusätzlich hält
+   sessionViewDidResize: client_width/height nach, weil der Kommandozeilen-
+   Client setScrollOffset:y:w:h: nie aufruft und Skalierung samt
+   Mauskoordinaten sonst toter Code bleiben.
+
+3. client/Mac/Keyboard.m
+   Baufehler, die erst mit aktiviertem Cocoa-Client auftreten.
+
+4. client/SDL/SDL3/sdl_{context,freerdp}.{cpp,hpp}
+   Der SDL-Client stellte je eingegangenem Aktualisierungspaket ein Bild dar.
+   Jedes SDL_RenderPresent wartet auf den Bildwechsel des Monitors, ein
+   Bildaufbau aus zwanzig Paketen kostete somit zwanzig Wartezyklen. Nun wird
+   die Warteschlange erst vollständig geleert und danach einmal dargestellt.
+   Die Schleife zeichnete ausserdem bei jedem Durchlauf eine überflüssige
+   Vollbildauffrischung, weil ein leeres Paket als "alles neu zeichnen"
+   ausgelegt wurde; auch das entfällt. Gemessen sank die Renderlast im
+   Hauptthread von 47 auf 1 Prozent.
+
+
+5. client/SDL/SDL3/sdl_clip.cpp
+   Beim Aushandeln des Zwischenablage-Kanals stösst MonitorReady ein Ereignis
+   ohne Formate an. Der Client meldete dem Server daraufhin eine leere
+   Formatliste, sodass alles vor dem Verbindungsaufbau Kopierte im Gastsystem
+   unerreichbar blieb. Nun wird der Zustand der Systemzwischenablage
+   nachgeladen, wenn ein Ereignis keine Formate mitbringt.
+
+6. client/SDL/SDL3/sdl_clip.cpp (Dateien kopieren)
+   Kopierte Dateien erreichten die Sitzung nie, obwohl der Datenpfad für
+   FileGroupDescriptorW in ReceiveFormatDataRequestHandle vollständig
+   vorhanden ist. Es fehlten zwei Dinge: Der Client rief nie
+   cliprdr_file_context_set_locally_available() auf, weshalb
+   cliprdr_file_context_current_flags() dauerhaft 0 lieferte und der Server
+   die Dateiunterstützung des Clients nicht erfuhr; und die Formatliste kannte
+   "text/uri-list" nicht, sodass FileGroupDescriptorW nie angeboten wurde.
+   Der X11-Client verfährt in xf_cliprdr.c genauso.
+
+7. client/common/client_cliprdr_file.{c,h}, client/SDL/SDL3/sdl_clip.cpp
+   (Gegenrichtung: Dateien aus der Sitzung zum Mac)
+   FreeRDP setzt für diese Richtung FUSE voraus: der Server schickt nur eine
+   Beschreibungsliste, die Inhalte müssen einzeln per CB_FILECONTENTS_REQUEST
+   abgeholt werden, und ohne WITH_FUSE liefert has_local_support() hart FALSE,
+   update_server_data() ist leer und ServerFileContentsResponse wird gar nicht
+   erst registriert. Unter macOS gibt es FUSE nur mit einer fremden
+   Kernel-Erweiterung, die sich nicht mitliefern lässt.
+
+   Entscheidend ist, dass der Synthesizer in winpr/libwinpr/clipboard/
+   synthetic_file.c die text/uri-list allein aus delegate->basePath und den
+   Namen der Beschreibungsliste zusammensetzt - er prüft nicht, ob die Dateien
+   existieren. Statt FUSE nachzubauen genügt es also, die Dateien wirklich
+   abzuholen und basePath auf ihren Ordner zu setzen.
+
+   update_server_data() legt dafür je Kopiervorgang einen Ordner unterhalb von
+   file->path an und startet einen Abhol-Thread; der fragt Stück für Stück per
+   FILECONTENTS_RANGE an. Die Antworten treffen im Kanal-Thread ein und wecken
+   ihn. Vor dem Einfügen wartet der SDL-Thread in ClipDataCb über
+   cliprdr_file_context_wait_for_files() auf das Ende - warten darf nur er,
+   denn ein wartender Kanal-Thread könnte die Antworten nicht mehr annehmen
+   und liefe in die Zeitsperre.
+
+8. client/SDL/SDL3/sdl_clip.{cpp,hpp}, sdl_context.{cpp,hpp}
+   (Ziehen und Fallenlassen: Mac -> Sitzung)
+   RDP hat keinen Kanal für Ziehen und Fallenlassen; die Kanalliste unter
+   channels/ kennt nur cliprdr und rdpdr. Der einzige Weg, abgelegte Dateien
+   in den Gast zu bringen, führt daher über die Zwischenablage.
+
+   SDL meldet abgelegte Dateien bereits als SDL_EVENT_DROP_*, der Client warf
+   sie bisher weg. Nun sammelt SdlContext::handleEvent(SDL_DropEvent) die
+   Pfade und übergibt sie beim Loslassen an sdlClip::offerDroppedFiles(). Das
+   kündigt dem Gast FileGroupDescriptorW an, ohne die Mac-Zwischenablage
+   anzutasten: Die Pfade liegen in _drop_uri_list und werden in
+   ReceiveFormatDataRequestHandle bevorzugt vor SDL_GetClipboardData bedient.
+
+   Die Reihenfolge ist entscheidend. Erst wenn der Gast die Formatliste
+   bestätigt hat, liegen die Dateien in seiner Zwischenablage; ein sofortiges
+   Strg+V ginge ins Leere. waitForDropAck() wartet deshalb auf das Ereignis,
+   das ReceiveFormatListResponse setzt. Danach folgen Zeigerbewegung,
+   Fokusklick und Strg+V an der Stelle des Loslassens - umgerechnet über
+   dieselbe Kette wie echte Mausereignisse (eventToPixelCoordinates,
+   removeLocalScaling, applyMonitorOffset), sonst zeigt der Gastzeiger bei
+   skalierten Fenstern woandershin.
+
+9. client/SDL/SDL3/sdl_clip.{cpp,hpp}, sdl_context.{cpp,hpp}
+   (Ziehen aus der Sitzung auf den Mac)
+   RDP meldet dem Client nicht, dass im Gast gezogen wird - der Server sendet
+   dazu nichts. Der Client muss die Absicht deshalb aus dem erschliessen, was
+   er selbst sieht: gedrückte linke Maustaste, gedrückte Wahltaste und ein
+   Zeiger, der das Fenster verlässt. Die Wahltaste ist bewusst verlangt, sonst
+   löste jedes Herausfahren mit gedrückter Taste - etwa beim Markieren von
+   Text - den Vorgang aus.
+
+   startDragOut() bricht dann im Gast das Ziehen mit Esc ab (erst danach die
+   Maustaste loslassen, umgekehrt legte der Gast die Datei am Fensterrand ab),
+   kopiert mit Strg+C und wartet in sdlClip::fetchServerFiles() auf die
+   Formatliste des Servers. Die Wahltaste wird im Gast vorher losgelassen,
+   sonst entstünde Alt+Esc beziehungsweise Alt+C.
+
+   fetchServerFiles() fragt anschliessend den internen Typ
+   "application/x-remotedeskrdp-files" ab. Der bedeutet "Liste holen UND
+   Inhalte abwarten" (siehe Punkt 7), die zurückgegebenen file://-Zeilen zeigen
+   also auf fertige Dateien im temporären Ordner. Deren Pfade gehen an
+   RemoteDesk_StartFileDrag() im SDL-Patch, ab dort führt macOS den Vorgang.
+
+
+10. client/common/client_cliprdr_file.c (Prozentkodierung)
+    Ein Fehler von FreeRDP selbst, in 3.26.0 wie im heutigen master enthalten.
+    Die Dateiliste kommt als URI-Liste, also prozentkodiert. In
+    cliprdr_local_stream_update() dekodierte nur append_entry() (ueber
+    cliprdr_local_file_new), waehrend is_directory() und add_directory()
+    denselben Pfad kodiert weiterreichten. Ein Ordner "Mein Ordner" erreichte
+    CreateFileW() als "Mein%20Ordner", wurde nicht gefunden, galt damit nicht
+    als Verzeichnis - und sein Inhalt wurde nie uebertragen. Betroffen ist
+    jeder Name mit Leerzeichen, Umlaut, '%' oder '#'; schlichte Namen liefen
+    zufaellig richtig, weil winpr_str_url_encode() sie unveraendert laesst.
+
+    Zusaetzlich baute add_directory() Kindpfade aus dem kodierten Elternpfad
+    und dem rohen Dateinamen zusammen; ein '%' im Dateinamen wurde beim
+    spaeteren Dekodieren als Escape missdeutet.
+
+    Behoben, indem genau einmal dekodiert wird - beim Zerlegen der URI-Liste.
+    Alles dahinter arbeitet mit echten Dateisystempfaden, deshalb kopiert
+    cliprdr_local_file_new() den Pfad jetzt nur noch.
+11. client/SDL/SDL3/sdl_window.cpp (Alpha-Blenden der Texturen)
+    Ein Fehler von FreeRDP selbst, in 3.26.0 wie in 3.30.0 enthalten. Der
+    SDL-Client legt seine Texturen im Format BGRA32 an, also mit Alphakanal,
+    ruft aber nie SDL_SetTextureBlendMode() auf. SDL3 stellt Alpha-Texturen
+    standardmaessig auf SDL_BLENDMODE_BLEND, wodurch der Alphakanal des
+    GDI-Puffers als Deckkraft ausgewertet wird. Der ist dafuer aber nicht
+    gedacht: bei 16 bpp schreibt die Farbumwandlung volldeckend (deshalb faellt
+    nichts auf), bei 24 bpp bleibt er teilweise leer, und bei 32 bpp sendet
+    xrdp durchgehend Null.
+
+    Gegen xrdp 0.9.24 ergibt das bei 24 bpp Streifen und bei 32 bpp ein
+    schwarzes Bild, waehrend 16 bpp sauber laeuft. sdl_context.cpp:364 setzt
+    den Blend-Modus nur auf der Surface, was fuer die daraus erzeugte Textur
+    wirkungslos ist. Der X11-Client ist nicht betroffen, weil
+    xf_get_local_color_format() bei Bildschirmtiefe 24 BGRX32 waehlt, also ein
+    Format ohne Alphakanal.
+
+    Nachgewiesen, indem SDL_CreateTexture zur Laufzeit abgefangen und nur der
+    Blend-Modus abgeschaltet wurde: das Bild war bei 24 bpp sofort sauber.
+
+diff --git a/client/Mac/Keyboard.m b/client/Mac/Keyboard.m
+index 31682d1..625142d 100644
+--- a/client/Mac/Keyboard.m
++++ b/client/Mac/Keyboard.m
+@@ -158,9 +158,9 @@ static enum APPLE_KEYBOARD_TYPE mac_identify_keyboard_type(uint32_t vendorID, ui
+ 
+ enum APPLE_KEYBOARD_TYPE mac_detect_keyboard_type(void)
+ {
+-	CFSetRef deviceCFSetRef = nullptr;
+-	IOHIDDeviceRef inIOHIDDeviceRef = nullptr;
+-	IOHIDManagerRef tIOHIDManagerRef = nullptr;
++	CFSetRef deviceCFSetRef = NULL;
++	IOHIDDeviceRef inIOHIDDeviceRef = NULL;
++	IOHIDManagerRef tIOHIDManagerRef = NULL;
+ 	IOHIDDeviceRef *tIOHIDDeviceRefs = nil;
+ 	enum APPLE_KEYBOARD_TYPE type = APPLE_KEYBOARD_TYPE_ANSI;
+ 	tIOHIDManagerRef = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+@@ -168,7 +168,7 @@ enum APPLE_KEYBOARD_TYPE mac_detect_keyboard_type(void)
+ 	if (!tIOHIDManagerRef)
+ 		return type;
+ 
+-	IOHIDManagerSetDeviceMatching(tIOHIDManagerRef, nullptr);
++	IOHIDManagerSetDeviceMatching(tIOHIDManagerRef, NULL);
+ 	IOReturn tIOReturn = IOHIDManagerOpen(tIOHIDManagerRef, kIOHIDOptionsTypeNone);
+ 
+ 	if (noErr != tIOReturn)
+@@ -187,7 +187,7 @@ enum APPLE_KEYBOARD_TYPE mac_detect_keyboard_type(void)
+ 
+ 	CFSetGetValues(deviceCFSetRef, (const void **)tIOHIDDeviceRefs);
+ 	CFRelease(deviceCFSetRef);
+-	deviceCFSetRef = nullptr;
++	deviceCFSetRef = NULL;
+ 
+ 	for (deviceIndex = 0; deviceIndex < deviceCount; deviceIndex++)
+ 	{
+@@ -230,7 +230,7 @@ enum APPLE_KEYBOARD_TYPE mac_detect_keyboard_type(void)
+ 	if (deviceCFSetRef)
+ 	{
+ 		CFRelease(deviceCFSetRef);
+-		deviceCFSetRef = nullptr;
++		deviceCFSetRef = NULL;
+ 	}
+ 
+ 	if (tIOHIDManagerRef)
+diff --git a/client/Mac/cli/AppDelegate.h b/client/Mac/cli/AppDelegate.h
+index e860039..de7a6e1 100644
+--- a/client/Mac/cli/AppDelegate.h
++++ b/client/Mac/cli/AppDelegate.h
+@@ -19,6 +19,7 @@
+ }
+ 
+ - (void)rdpConnectError:(NSString *)customMessage;
++- (void)sessionViewDidResize:(NSNotification *)notification;
+ 
+ @property(assign) IBOutlet NSWindow *window;
+ @property(assign) rdpContext *context;
+diff --git a/client/Mac/cli/AppDelegate.m b/client/Mac/cli/AppDelegate.m
+index 59b84eb..e7aea65 100644
+--- a/client/Mac/cli/AppDelegate.m
++++ b/client/Mac/cli/AppDelegate.m
+@@ -25,6 +25,7 @@ void mac_set_view_size(rdpContext *context, MRDPView *view);
+ 
+ - (void)dealloc
+ {
++	[[NSNotificationCenter defaultCenter] removeObserver:self];
+ 	[super dealloc];
+ }
+ 
+@@ -97,6 +98,24 @@ void mac_set_view_size(rdpContext *context, MRDPView *view);
+ 	[mrdpView resume];
+ }
+ 
++/* Keeps the smart sizing scale factors in sync with the window.  mac_end_paint()
++ * and mf_scale_mouse_coordinates() derive both the repaint rectangles and the
++ * pointer position from client_width/client_height, which nothing else in the
++ * standalone client ever updates. */
++- (void)sessionViewDidResize:(NSNotification *)notification
++{
++	if (!context || !mrdpView)
++		return;
++
++	const NSSize size = [mrdpView frame].size;
++
++	if ((size.width < 1) || (size.height < 1))
++		return;
++
++	[mrdpView setScrollOffset:0 y:0 w:(int)size.width h:(int)size.height];
++	[mrdpView setNeedsDisplay:YES];
++}
++
+ - (void)applicationWillResignActive:(NSNotification *)notification
+ {
+ 	[mrdpView pause];
+@@ -279,6 +298,23 @@ void AppDelegate_EmbedWindowEventHandler(void *ctx, const EmbedWindowEventArgs *
+ 		if (_singleDelegate->window)
+ 		{
+ 			[[_singleDelegate->window contentView] addSubview:mfc->view];
++
++			/* Without an autoresizing mask the session view keeps its initial
++			 * frame, so enlarging the window only adds empty space around a
++			 * fixed image.  Smart sizing is supposed to scale the session, and
++			 * -drawRect: already stretches the bitmap over the whole view, so
++			 * letting the view follow the window is all that is missing. */
++			if (freerdp_settings_get_bool(context->settings, FreeRDP_SmartSizing))
++			{
++				[[_singleDelegate->window contentView] setAutoresizesSubviews:YES];
++				[mfc->view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
++				[mfc->view setPostsFrameChangedNotifications:YES];
++				[[NSNotificationCenter defaultCenter]
++				    addObserver:_singleDelegate
++				       selector:@selector(sessionViewDidResize:)
++				           name:NSViewFrameDidChangeNotification
++				         object:mfc->view];
++			}
+ 		}
+ 
+ 		dispatch_async(dispatch_get_main_queue(), ^{
+@@ -313,8 +349,8 @@ void mac_set_view_size(rdpContext *context, MRDPView *view)
+ 	// calculate window of same size, but keep position
+ 	NSRect outerRect = [[view window] frame];
+ 	outerRect.size = [[view window] frameRectForContentRect:innerRect].size;
+-	// we are not in RemoteApp mode, disable larger than resolution
+-	[[view window] setContentMaxSize:innerRect.size];
++	[[view window] setMaxSize:NSMakeSize(10000, 10000)];
++	[[view window] setContentMaxSize:NSMakeSize(10000, 10000)];
+ 	// set window to given area
+ 	[[view window] setFrame:outerRect display:YES];
+ 	// set window to front
+diff --git a/client/Mac/cli/MainMenu.xib b/client/Mac/cli/MainMenu.xib
+index f647699..a461dee 100644
+--- a/client/Mac/cli/MainMenu.xib
++++ b/client/Mac/cli/MainMenu.xib
+@@ -103,8 +103,7 @@
+             <windowCollectionBehavior key="collectionBehavior" fullScreenPrimary="YES"/>
+             <rect key="contentRect" x="163" y="10" width="1024" height="768"/>
+             <rect key="screenRect" x="0.0" y="0.0" width="2560" height="1417"/>
+-            <value key="minSize" type="size" width="1024" height="768"/>
+-            <value key="maxSize" type="size" width="1024" height="768"/>
++            <value key="minSize" type="size" width="640" height="480"/>
+             <view key="contentView" id="372">
+                 <rect key="frame" x="0.0" y="0.0" width="1024" height="768"/>
+                 <autoresizingMask key="autoresizingMask"/>
+diff --git a/client/SDL/SDL3/sdl_clip.cpp b/client/SDL/SDL3/sdl_clip.cpp
+index 248ca0f..17c4ad4 100644
+--- a/client/SDL/SDL3/sdl_clip.cpp
++++ b/client/SDL/SDL3/sdl_clip.cpp
+@@ -26,6 +26,7 @@
+ #include <utility>
+ 
+ #include <winpr/wlog.h>
++#include <winpr/string.h>
+ #include <winpr/image.h>
+ 
+ #include "sdl_clip.hpp"
+@@ -54,6 +55,9 @@ static const char s_mime_jpg[] = "image/jpeg";
+ 
+ static const char s_mime_tiff[] = "image/tiff";
+ static const char s_mime_uri_list[] = "text/uri-list";
++/* RemoteDeskRDP: interner Typ, siehe ClipDataCb. Wird gegenueber macOS nicht
++ * beworben, sondern nur vom Cocoa-Datenanbieter fuer public.file-url benutzt. */
++static const char s_mime_files_ready[] = "application/x-remotedeskrdp-files";
+ static const char s_mime_html[] = "text/html";
+ 
+ #define BMP_MIME_LIST "image/bmp", "image/x-bmp", "image/x-MS-bmp", "image/x-win-bitmap"
+@@ -135,6 +139,9 @@ sdlClip::sdlClip(SdlContext* sdl)
+ {
+ 	WINPR_ASSERT(sdl);
+ 
++	_drop_ack = CreateEventA(nullptr, TRUE, FALSE, nullptr);
++	_server_files = CreateEventA(nullptr, TRUE, FALSE, nullptr);
++
+ 	std::stringstream ss;
+ 	ss << s_mime_freerdp_update << "-" << _uuid;
+ 	_mime_uuid = ss.str();
+@@ -145,6 +152,8 @@ sdlClip::~sdlClip()
+ 	cliprdr_file_context_free(_file);
+ 	ClipboardDestroy(_system);
+ 	std::ignore = CloseHandle(_event);
++	std::ignore = CloseHandle(_drop_ack);
++	std::ignore = CloseHandle(_server_files);
+ }
+ 
+ bool sdlClip::init(CliprdrClientContext* clip)
+@@ -172,6 +181,161 @@ bool sdlClip::uninit(CliprdrClientContext* clip)
+ 	return true;
+ }
+ 
++/* RemoteDesk: baut aus lokalen Pfaden eine "text/uri-list", wie sie
++ * freedesktop-Programme liefern.  winpr entschluesselt die Prozentkodierung
++ * beim Zerlegen wieder (parse_uri_to_local_file), Leerzeichen und Umlaute
++ * muessen also kodiert werden.
++ */
++static std::string paths_to_uri_list(const std::vector<std::string>& paths)
++{
++	std::string list;
++	for (const auto& path : paths)
++	{
++		if (path.empty() || path.front() != '/')
++			continue;
++
++		/* Der Schraegstrich trennt die Bestandteile und darf nicht kodiert
++		 * werden, alles andere schon.  Deshalb Abschnitt fuer Abschnitt. */
++		std::string encoded;
++		size_t pos = 0;
++		while (pos < path.size())
++		{
++			auto next = path.find('/', pos);
++			if (next == std::string::npos)
++				next = path.size();
++
++			if (next > pos)
++			{
++				auto part = path.substr(pos, next - pos);
++				auto enc = std::shared_ptr<char>(winpr_str_url_encode(part.c_str(), part.size()),
++				                                 free);
++				if (!enc)
++					return {};
++				encoded += enc.get();
++			}
++			if (next < path.size())
++				encoded += '/';
++			pos = next + 1;
++		}
++
++		list += "file://";
++		list += encoded;
++		list += "\r\n";
++	}
++	return list;
++}
++
++bool sdlClip::offerDroppedFiles(const std::vector<std::string>& paths)
++{
++	if (!_ctx || !_sync || paths.empty())
++	{
++		WLog_Print(_log, WLOG_WARN, "Ablegen ignoriert: Kanal noch nicht bereit");
++		return false;
++	}
++
++	auto list = paths_to_uri_list(paths);
++	if (list.empty())
++		return false;
++
++	{
++		std::scoped_lock lock(_lock);
++		_drop_uri_list = list;
++		_cache_data.clear();
++	}
++	std::ignore = ResetEvent(_drop_ack);
++
++	clearServerFormats();
++
++	if (!cliprdr_file_context_set_locally_available(_file, TRUE))
++		return false;
++
++	std::vector<CLIPRDR_FORMAT> clientFormats;
++	std::string name = s_type_FileGroupDescriptorW;
++	clientFormats.push_back({ ClipboardRegisterFormat(_system, name.c_str()), name.data() });
++
++	const CLIPRDR_FORMAT_LIST formatList = {
++		{ CB_FORMAT_LIST, 0, 0 },
++		static_cast<UINT32>(clientFormats.size()),
++		clientFormats.data(),
++	};
++
++	WLog_Print(_log, WLOG_DEBUG, "%" PRIuz " abgelegte Datei(en) werden angeboten", paths.size());
++
++	WINPR_ASSERT(_ctx->ClientFormatList);
++	return _ctx->ClientFormatList(_ctx, &formatList) == CHANNEL_RC_OK;
++}
++
++bool sdlClip::waitForDropAck(uint32_t timeoutMs)
++{
++	return WaitForSingleObject(_drop_ack, timeoutMs) == WAIT_OBJECT_0;
++}
++
++void sdlClip::armServerFileWait()
++{
++	if (_server_files)
++		std::ignore = ResetEvent(_server_files);
++}
++
++std::vector<std::string> sdlClip::fetchServerFiles(uint32_t timeoutMs)
++{
++	std::vector<std::string> paths;
++
++	if (!_server_files || !_sdl)
++		return paths;
++
++	/* Auf die Formatliste des Gasts warten. Sie kommt im Kanal-Thread an,
++	 * hier darf deshalb keine Sperre gehalten werden. */
++	HANDLE hdl[2] = { freerdp_abort_event(_sdl->context()), _server_files };
++	if (WaitForMultipleObjects(ARRAYSIZE(hdl), hdl, FALSE, timeoutMs) != WAIT_OBJECT_0 + 1)
++	{
++		WLog_Print(_log, WLOG_DEBUG, "Gast bietet keine Dateien an");
++		return paths;
++	}
++
++	/* Der interne Typ bedeutet "Liste holen UND Inhalte abwarten"; danach
++	 * zeigen die URLs auf fertige Dateien im temporaeren Ordner. */
++	size_t size = 0;
++	auto data = static_cast<const char*>(ClipDataCb(this, s_mime_files_ready, &size));
++	if (!data || (size == 0))
++	{
++		WLog_Print(_log, WLOG_WARN, "Dateiliste des Gasts ist leer");
++		return paths;
++	}
++
++	std::string list(data, size);
++	size_t pos = 0;
++	while (pos < list.size())
++	{
++		auto end = list.find('\n', pos);
++		if (end == std::string::npos)
++			end = list.size();
++
++		auto line = list.substr(pos, end - pos);
++		pos = end + 1;
++
++		while (!line.empty() && ((line.back() == '\r') || (line.back() == '\0')))
++			line.pop_back();
++
++		static const std::string prefix = "file://";
++		if (line.compare(0, prefix.size(), prefix) != 0)
++			continue;
++
++		auto encoded = line.substr(prefix.size());
++		/* winpr kodiert beim Erzeugen, hier muss also wieder dekodiert werden. */
++		auto decoded = winpr_str_url_decode(encoded.c_str(), encoded.size());
++		if (decoded)
++		{
++			paths.emplace_back(decoded);
++			free(decoded);
++		}
++		else
++			paths.emplace_back(encoded);
++	}
++
++	WLog_Print(_log, WLOG_DEBUG, "%" PRIuz " Datei(en) aus der Sitzung bereit", paths.size());
++	return paths;
++}
++
+ bool sdlClip::contains(const char** mime_types, Sint32 count)
+ {
+ 	for (Sint32 x = 0; x < count; x++)
+@@ -210,6 +374,14 @@ bool sdlClip::handleEvent(const SDL_ClipboardEvent& ev)
+ 		return true;
+ 	}
+ 
++	/* RemoteDesk: Eine echte Aenderung der Mac-Zwischenablage hebt ein zuvor
++	 * angebotenes Ablegen auf -- sonst bekaeme der Gast weiter die alten
++	 * Dateien statt des frisch Kopierten. */
++	{
++		std::scoped_lock lock(_lock);
++		_drop_uri_list.clear();
++	}
++
+ 	clearServerFormats();
+ 
+ 	std::string mime_html = s_mime_html;
+@@ -227,10 +399,38 @@ bool sdlClip::handleEvent(const SDL_ClipboardEvent& ev)
+ 	size_t nformats = WINPR_ASSERTING_INT_CAST(size_t, ev.num_mime_types);
+ 	const char** clipboard_mime_formats = ev.mime_types;
+ 
++	/* RemoteDesk: Beim Aushandeln des Kanals stösst MonitorReady ein Ereignis
++	 * ohne Formate an. Ohne Nacharbeit meldete der Client dem Server dann eine
++	 * leere Liste, und alles vor dem Verbindungsaufbau Kopierte bliebe im
++	 * Gastsystem unerreichbar. Deshalb wird der Zustand der Systemzwischenablage
++	 * nachgeladen, sobald ein Ereignis keine Formate mitbringt. */
++	std::vector<std::string> polledMimeTypes;
++	std::vector<const char*> polledPointers;
++	if (nformats == 0)
++	{
++		size_t count = 0;
++		char** mimeTypes = SDL_GetClipboardMimeTypes(&count);
++		if (mimeTypes)
++		{
++			for (size_t i = 0; i < count; i++)
++				polledMimeTypes.emplace_back(mimeTypes[i]);
++			SDL_free(mimeTypes);
++
++			for (const auto& mime : polledMimeTypes)
++				polledPointers.push_back(mime.c_str());
++
++			nformats = polledPointers.size();
++			clipboard_mime_formats = polledPointers.data();
++			WLog_Print(_log, WLOG_TRACE, "polled %" PRIuz " formats from the system clipboard",
++			           nformats);
++		}
++	}
++
+ 	WLog_Print(_log, WLOG_TRACE, "SDL has %" PRIuz " formats", nformats);
+ 
+ 	bool textPushed = false;
+ 	bool imgPushed = false;
++	bool filePushed = false;
+ 
+ 	for (size_t i = 0; i < nformats; i++)
+ 	{
+@@ -252,6 +452,18 @@ bool sdlClip::handleEvent(const SDL_ClipboardEvent& ev)
+ 		else if (local_mime == mime_html)
+ 			/* html */
+ 			clientFormatNames.emplace_back(s_type_HtmlFormat);
++		else if (local_mime == s_mime_uri_list)
++		{
++			/* RemoteDesk: kopierte Dateien. Der Datenpfad in
++			 * ReceiveFormatDataRequestHandle beherrscht FileGroupDescriptorW
++			 * bereits, es fehlte allein die Ankündigung. */
++			if (!filePushed)
++			{
++				if (cliprdr_file_context_set_locally_available(_file, TRUE))
++					clientFormatNames.emplace_back(s_type_FileGroupDescriptorW);
++				filePushed = true;
++			}
++		}
+ 		else if ((std::find(mime_bitmap.begin(), mime_bitmap.end(), local_mime) !=
+ 		          mime_bitmap.end()) ||
+ 		         (std::find(mime_images.begin(), mime_images.end(), local_mime) !=
+@@ -331,6 +543,17 @@ UINT sdlClip::MonitorReady(CliprdrClientContext* context, const CLIPRDR_MONITOR_
+ 
+ UINT sdlClip::SendClientCapabilities()
+ {
++	/* RemoteDesk: Die Fähigkeiten gehen nur ein einziges Mal über die Leitung,
++	 * lange bevor der Nutzer etwas kopiert. Ohne diese Freischaltung liefert
++	 * cliprdr_file_context_current_flags() dauerhaft 0, der Server erführe nie
++	 * von der Dateiunterstützung und würde FileGroupDescriptorW niemals
++	 * anfordern. Der X11-Client verfährt in xf_cliprdr.c genauso. */
++	{
++		ClipboardLockGuard systemlock(_system);
++		if (ClipboardGetFormatId(_system, s_mime_uri_list) != 0)
++			cliprdr_file_context_set_locally_available(_file, TRUE);
++	}
++
+ 	CLIPRDR_GENERAL_CAPABILITY_SET generalCapabilitySet = {
+ 		CB_CAPSTYPE_GENERAL, 12, CB_CAPS_VERSION_2,
+ 		CB_USE_LONG_FORMAT_NAMES | cliprdr_file_context_current_flags(_file)
+@@ -547,6 +770,10 @@ UINT sdlClip::ReceiveServerFormatList(CliprdrClientContext* context,
+ 		clipboard->_current_mimetypes.push_back(s_mime_uri_list);
+ 		clipboard->_current_mimetypes.push_back(s_mime_gnome_copied_files);
+ 		clipboard->_current_mimetypes.push_back(s_mime_mate_copied_files);
++
++		/* RemoteDeskRDP: weckt fetchServerFiles beim Ziehen aus der Sitzung. */
++		if (clipboard->_server_files)
++			std::ignore = SetEvent(clipboard->_server_files);
+ 	}
+ 	clipboard->_current_mimetypes.push_back(clipboard->_mime_uuid.c_str());
+ 
+@@ -561,7 +788,7 @@ UINT sdlClip::ReceiveServerFormatList(CliprdrClientContext* context,
+ 	return clipboard->SendFormatListResponse(rc);
+ }
+ 
+-UINT sdlClip::ReceiveFormatListResponse(WINPR_ATTR_UNUSED CliprdrClientContext* context,
++UINT sdlClip::ReceiveFormatListResponse(CliprdrClientContext* context,
+                                         const CLIPRDR_FORMAT_LIST_RESPONSE* formatListResponse)
+ {
+ 	WINPR_ASSERT(context);
+@@ -569,6 +796,14 @@ UINT sdlClip::ReceiveFormatListResponse(WINPR_ATTR_UNUSED CliprdrClientContext*
+ 
+ 	if (formatListResponse->common.msgFlags & CB_RESPONSE_FAIL)
+ 		WLog_WARN(TAG, "format list update failed");
++
++	/* RemoteDesk: Nach dem Ablegen wartet der SDL-Faden auf genau diese
++	 * Bestaetigung, bevor er Strg+V in die Sitzung schickt. */
++	auto clipboard = static_cast<sdlClip*>(
++	    cliprdr_file_context_get_context(static_cast<CliprdrFileContext*>(context->custom)));
++	if (clipboard && clipboard->_drop_ack)
++		std::ignore = SetEvent(clipboard->_drop_ack);
++
+ 	return CHANNEL_RC_OK;
+ }
+ 
+@@ -650,7 +885,22 @@ std::shared_ptr<BYTE> sdlClip::ReceiveFormatDataRequestHandle(
+ 
+ 	{
+ 		size_t size = 0;
+-		auto sdldata = std::shared_ptr<void>(SDL_GetClipboardData(mime, &size), SDL_free);
++		std::shared_ptr<void> sdldata;
++
++		/* RemoteDesk: Nach dem Ablegen liegen die Dateien nicht in der
++		 * Zwischenablage des Macs, sondern nur in _drop_uri_list. */
++		if ((fileFormatId == formatId) && !clipboard->_drop_uri_list.empty())
++		{
++			size = clipboard->_drop_uri_list.size();
++			auto copy = malloc(size + 1);
++			if (!copy)
++				return data;
++			memcpy(copy, clipboard->_drop_uri_list.c_str(), size + 1);
++			sdldata = std::shared_ptr<void>(copy, free);
++		}
++		else
++			sdldata = std::shared_ptr<void>(SDL_GetClipboardData(mime, &size), SDL_free);
++
+ 		if (!sdldata)
+ 			return data;
+ 
+@@ -812,6 +1062,25 @@ const void* sdlClip::ClipDataCb(void* userdata, const char* mime_type, size_t* s
+ 	*size = 0;
+ 	uint32_t len = 0;
+ 
++	/* RemoteDeskRDP: macOS kennt "text/uri-list" nicht; der Finder braucht
++	 * "public.file-url". Der Cocoa-Teil legt deshalb je Datei ein
++	 * Pasteboard-Element an und fragt ueber diesen internen Typ nach. Er
++	 * bedeutet: Liste besorgen UND die Inhalte fertig abholen. Der blosse
++	 * "text/uri-list" liefert weiterhin nur die Namen, damit ein Kopieren im
++	 * Gast nicht sofort alles herunterlaedt. */
++	if (strcmp(mime_type, s_mime_files_ready) == 0)
++	{
++		size_t ignored = 0;
++		(void)ClipDataCb(userdata, s_mime_uri_list, &ignored);
++
++		/* Ausserhalb jeder Sperre warten: der Kanal-Thread braucht sie fuer
++		 * die Antworten des Servers. */
++		if (!cliprdr_file_context_wait_for_files(clip->_file, 10 * 60 * 1000))
++			WLog_Print(clip->_log, WLOG_WARN, "Dateien nicht vollstaendig abgeholt");
++
++		mime_type = s_mime_uri_list;
++	}
++
+ 	if (mime_is_text(mime_type))
+ 		mime_type = "text/plain";
+ 
+diff --git a/client/SDL/SDL3/sdl_clip.hpp b/client/SDL/SDL3/sdl_clip.hpp
+index b753fe0..50f21aa 100644
+--- a/client/SDL/SDL3/sdl_clip.hpp
++++ b/client/SDL/SDL3/sdl_clip.hpp
+@@ -89,6 +89,30 @@ class sdlClip
+ 
+ 	[[nodiscard]] bool handleEvent(const SDL_ClipboardEvent& ev);
+ 
++	/* RemoteDesk: Ziehen und Fallenlassen vom Mac in die Sitzung.  RDP kennt
++	 * dafuer keinen eigenen Kanal, der einzige Weg fuer Dateien ist cliprdr.
++	 * offerDroppedFiles kuendigt die abgelegten Dateien dem Gast als
++	 * FileGroupDescriptorW an, ohne die Zwischenablage des Macs anzuruehren:
++	 * gefragt wird spaeter allein die hier gemerkte Liste.
++	 */
++	[[nodiscard]] bool offerDroppedFiles(const std::vector<std::string>& paths);
++
++	/* Wartet auf die Bestaetigung der Formatliste durch den Gast.  Erst danach
++	 * hat dessen Zwischenablage die Dateien, ein sofortiges Strg+V ginge ins
++	 * Leere. */
++	[[nodiscard]] bool waitForDropAck(uint32_t timeoutMs);
++
++	/* RemoteDeskRDP: Gegenrichtung, Ziehen aus der Sitzung auf den Mac.
++	 *
++	 * armServerFileWait() muss vor dem Strg+C an den Gast laufen, sonst
++	 * koennte fetchServerFiles auf eine alte Bestaetigung hereinfallen.
++	 * fetchServerFiles() wartet auf die Formatliste des Servers, holt die
++	 * Dateien vollstaendig ab und gibt die lokalen Pfade zurueck. Es blockiert
++	 * und darf daher nur aus dem SDL-Thread gerufen werden.
++	 */
++	void armServerFileWait();
++	[[nodiscard]] std::vector<std::string> fetchServerFiles(uint32_t timeoutMs);
++
+   private:
+ 	[[nodiscard]] UINT SendClientCapabilities();
+ 	void clearServerFormats();
+@@ -157,4 +181,11 @@ class sdlClip
+ 	std::vector<const char*> _current_mimetypes;
+ 	std::string _uuid;
+ 	std::string _mime_uuid;
++
++	/* RemoteDesk: Liste der per Ziehen abgelegten Dateien als "text/uri-list".
++	 * Solange sie gefuellt ist, hat sie beim Format FileGroupDescriptorW
++	 * Vorrang vor der Zwischenablage des Macs. */
++	std::string _drop_uri_list;
++	HANDLE _drop_ack = nullptr;
++	HANDLE _server_files = nullptr;
+ };
+diff --git a/client/SDL/SDL3/sdl_context.cpp b/client/SDL/SDL3/sdl_context.cpp
+index fafcd59..febe1c4 100644
+--- a/client/SDL/SDL3/sdl_context.cpp
++++ b/client/SDL/SDL3/sdl_context.cpp
+@@ -38,6 +38,17 @@
+ 
+ static constexpr auto sdl_allow_screensaver = "sdl-allow-screensaver";
+ 
++/* RemoteDesk: in src/SDL/src/video/cocoa/SDL_cocoawindow.m ergaenzt. SDL hat
++ * keine oeffentliche Schnittstelle, um einen Ziehvorgang zu starten. */
++#if defined(__APPLE__)
++extern "C" bool RemoteDesk_StartFileDrag(SDL_Window* window, const char* const* paths, int count);
++#else
++static bool RemoteDesk_StartFileDrag(SDL_Window*, const char* const*, int)
++{
++	return false;
++}
++#endif
++
+ static void sdl_PointerFreeCopyAll(rdpPointer* pointer)
+ {
+ 	sdl_Pointer_FreeCopy(pointer);
+@@ -892,7 +903,8 @@ void SdlContext::updateMonitorDataFromOffsets()
+ 	}
+ }
+ 
+-bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects)
++bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects,
++                              bool present)
+ {
+ 	if (!isConnected())
+ 		return true;
+@@ -932,7 +944,8 @@ bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& re
+ 			return false;
+ 	}
+ 
+-	window.updateSurface();
++	if (present)
++		window.updateSurface();
+ 	return true;
+ }
+ 
+@@ -1066,8 +1079,25 @@ bool SdlContext::moveMouseTo(const SDL_FPoint& pos)
+ 
+ bool SdlContext::handleEvent(const SDL_MouseMotionEvent& ev)
+ {
+-	if (!getWindowForId(ev.windowID))
++	auto window = getWindowForId(ev.windowID);
++	if (!window)
+ 		return true; /* Event for an untracked window (e.g. closed dialog) */
++
++	/* RemoteDesk: Ziehen aus der Sitzung auf den Mac. Siehe startDragOut(). */
++	if (_dragOutArmed && !_dragOutDone && (SDL_GetModState() & SDL_KMOD_ALT) &&
++	    (ev.state & SDL_BUTTON_LMASK))
++	{
++		int w = 0;
++		int h = 0;
++		if (SDL_GetWindowSize(window->window(), &w, &h) &&
++		    ((ev.x < 0.0f) || (ev.y < 0.0f) || (ev.x >= static_cast<float>(w)) ||
++		     (ev.y >= static_cast<float>(h))))
++		{
++			_dragOutDone = true;
++			return startDragOut();
++		}
++	}
++
+ 	SDL_Event copy{};
+ 	copy.motion = ev;
+ 	if (!eventToPixelCoordinates(ev.windowID, copy))
+@@ -1196,6 +1226,16 @@ bool SdlContext::handleEvent(const SDL_MouseButtonEvent& ev)
+ {
+ 	if (!getWindowForId(ev.windowID))
+ 		return true;
++
++	/* RemoteDesk: nur ein Druck im Fenster kann in ein Herausziehen muenden. */
++	if (ev.button == SDL_BUTTON_LEFT)
++	{
++		_dragOutArmed = ev.down;
++		if (ev.down)
++			_dragOutDone = false;
++		_dragOutWindow = ev.windowID;
++	}
++
+ 	SDL_Event copy = {};
+ 	copy.button = ev;
+ 	if (!eventToPixelCoordinates(ev.windowID, copy))
+@@ -1354,6 +1394,182 @@ SDL_FRect SdlContext::pixelToScreen(SDL_WindowID id, const SDL_FRect& pos, bool
+ 	return r;
+ }
+ 
++/* RemoteDesk: Ziehen und Fallenlassen vom Mac in die Sitzung.
++ *
++ * RDP kennt keinen Kanal fuer Ziehen und Fallenlassen -- der einzige Weg,
++ * Dateien in den Gast zu bringen, ist die Zwischenablage (cliprdr).  Deshalb
++ * wird beim Loslassen die Dateiliste dem Gast angeboten, der Zeiger an die
++ * Stelle des Loslassens gesetzt und dort Strg+V ausgeloest.  Fuer den Nutzer
++ * sieht das aus wie gewoehnliches Ablegen.
++ */
++bool SdlContext::handleEvent(const SDL_DropEvent& ev)
++{
++	switch (ev.type)
++	{
++		case SDL_EVENT_DROP_BEGIN:
++			_dropPaths.clear();
++			_dropWindow = ev.windowID;
++			return true;
++
++		case SDL_EVENT_DROP_POSITION:
++			_dropWindow = ev.windowID;
++			_dropX = ev.x;
++			_dropY = ev.y;
++			return true;
++
++		case SDL_EVENT_DROP_FILE:
++			if (ev.data)
++				_dropPaths.emplace_back(ev.data);
++			_dropWindow = ev.windowID;
++			_dropX = ev.x;
++			_dropY = ev.y;
++			return true;
++
++		case SDL_EVENT_DROP_COMPLETE:
++			return finishDrop();
++
++		default:
++			return true;
++	}
++}
++
++bool SdlContext::finishDrop()
++{
++	auto paths = std::move(_dropPaths);
++	_dropPaths.clear();
++
++	if (paths.empty())
++		return true;
++
++	if (!getWindowForId(_dropWindow))
++	{
++		WLog_Print(_log, WLOG_WARN, "Ablegen auf unbekanntem Fenster verworfen");
++		return true;
++	}
++
++	if (!getClipboardChannelContext().offerDroppedFiles(paths))
++		return true; /* nicht toedlich, die Sitzung laeuft weiter */
++
++	/* Erst wenn der Gast die Formatliste bestaetigt hat, liegen die Dateien in
++	 * seiner Zwischenablage.  Ein sofortiges Strg+V ginge ins Leere. */
++	if (!getClipboardChannelContext().waitForDropAck(3000))
++		WLog_Print(_log, WLOG_WARN, "Gast bestaetigt die Dateiliste nicht, versuche es dennoch");
++
++	/* Dieselbe Umrechnung wie bei echten Mausereignissen, sonst zeigt der
++	 * Gastzeiger bei skalierten Fenstern an die falsche Stelle. */
++	SDL_Event copy{};
++	copy.motion.type = SDL_EVENT_MOUSE_MOTION;
++	copy.motion.windowID = _dropWindow;
++	copy.motion.x = _dropX;
++	copy.motion.y = _dropY;
++	if (!eventToPixelCoordinates(_dropWindow, copy))
++		return true;
++	removeLocalScaling(copy.motion.x, copy.motion.y);
++	applyMonitorOffset(copy.motion.windowID, copy.motion.x, copy.motion.y);
++
++	const auto px = static_cast<INT32>(copy.motion.x);
++	const auto py = static_cast<INT32>(copy.motion.y);
++
++	/* Ein kurzer Klick setzt den Fokus im Gast auf das Fenster unter dem
++	 * Zeiger -- ohne ihn landete Strg+V im zuletzt aktiven Fenster. */
++	std::ignore = freerdp_client_send_button_event(common(), FALSE, PTR_FLAGS_MOVE, px, py);
++	std::ignore = freerdp_client_send_button_event(common(), FALSE,
++	                                               PTR_FLAGS_BUTTON1 | PTR_FLAGS_DOWN, px, py);
++	std::ignore = freerdp_client_send_button_event(common(), FALSE, PTR_FLAGS_BUTTON1, px, py);
++
++	/* Dem Gast Zeit lassen, den Fokus zu setzen. */
++	Sleep(150);
++
++	auto input = context()->input;
++	WINPR_ASSERT(input);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, TRUE, FALSE, RDP_SCANCODE_LCONTROL);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, TRUE, FALSE, RDP_SCANCODE_KEY_V);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_KEY_V);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_LCONTROL);
++
++	WLog_Print(_log, WLOG_DEBUG, "%" PRIuz " Datei(en) bei %d,%d abgelegt", paths.size(), px, py);
++	return true;
++}
++
++/* RemoteDesk: Ziehen aus der Sitzung auf den Mac.
++ *
++ * RDP verraet dem Client nicht, dass im Gast gezogen wird -- der Server sendet
++ * dazu nichts. Der Client muss die Absicht daher aus dem erkennen, was er
++ * selbst sieht: gedrueckte linke Maustaste, gedrueckte Wahltaste und ein
++ * Zeiger, der das Fenster verlaesst. Die Wahltaste ist Absicht: ohne sie
++ * wuerde jedes Herausfahren mit gedrueckter Taste (etwa beim Markieren von
++ * Text) den Vorgang ausloesen.
++ *
++ * Ablauf: im Gast das Ziehen mit Esc abbrechen, Maustaste loslassen, mit
++ * Strg+C kopieren, auf die Dateiliste warten und dann einen echten
++ * macOS-Ziehvorgang starten.
++ */
++bool SdlContext::startDragOut()
++{
++	auto& clip = getClipboardChannelContext();
++	clip.armServerFileWait();
++
++	auto input = context()->input;
++	WINPR_ASSERT(input);
++
++	/* Die Wahltaste haelt der Nutzer gedrueckt; im Gast muss sie weg, sonst
++	 * entstuende Alt+Esc beziehungsweise Alt+C. */
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_LMENU);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_RMENU);
++
++	/* Erst abbrechen, dann loslassen. Umgekehrt legte der Gast die Datei am
++	 * Fensterrand ab -- sie wuerde also verschoben. */
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, TRUE, FALSE, RDP_SCANCODE_ESCAPE);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_ESCAPE);
++	std::ignore = freerdp_client_send_button_event(common(), FALSE, PTR_FLAGS_BUTTON1, 0, 0);
++
++	Sleep(120);
++
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, TRUE, FALSE, RDP_SCANCODE_LCONTROL);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, TRUE, FALSE, RDP_SCANCODE_KEY_C);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_KEY_C);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_LCONTROL);
++
++	/* Wartet auf die Formatliste des Gasts, danach holt ClipDataCb die Inhalte
++	 * ab (dafuer gelten eigene, weit groessere Fristen). Traege Gastsysteme
++	 * brauchen nach dem Strg+C durchaus ein paar Sekunden. */
++	auto paths = clip.fetchServerFiles(10000);
++	if (paths.empty())
++	{
++		WLog_Print(_log, WLOG_DEBUG, "Herausziehen ohne Dateien, nichts zu tun");
++		return true;
++	}
++
++	/* macOS kann einen Ziehvorgang nur beginnen, solange die Maustaste
++	 * gedrueckt ist. Bei grossen Dateien dauert das Abholen laenger, als der
++	 * Nutzer haelt -- dann still aufhoeren. Die Dateien liegen durch das
++	 * Strg+C ohnehin in der Zwischenablage und lassen sich einfuegen. */
++	if ((SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) == 0)
++	{
++		WLog_Print(_log, WLOG_INFO,
++		           "Maustaste vor dem Ende des Abholens losgelassen, kein Ziehvorgang; "
++		           "die Dateien liegen in der Zwischenablage");
++		return true;
++	}
++
++	auto window = getWindowForId(_dragOutWindow);
++	if (!window)
++		return true;
++
++	std::vector<const char*> raw;
++	raw.reserve(paths.size());
++	for (const auto& p : paths)
++		raw.push_back(p.c_str());
++
++	if (!RemoteDesk_StartFileDrag(window->window(), raw.data(),
++	                              static_cast<int>(raw.size())))
++		WLog_Print(_log, WLOG_WARN, "macOS nahm den Ziehvorgang nicht an");
++	else
++		WLog_Print(_log, WLOG_DEBUG, "%" PRIuz " Datei(en) werden gezogen", paths.size());
++
++	return true;
++}
++
+ bool SdlContext::handleEvent(const SDL_Event& ev)
+ {
+ 	if ((ev.type >= SDL_EVENT_DISPLAY_FIRST) && (ev.type <= SDL_EVENT_DISPLAY_LAST))
+@@ -1416,6 +1632,14 @@ bool SdlContext::handleEvent(const SDL_Event& ev)
+ 			const auto& cev = ev.key;
+ 			return getInputChannelContext().handleEvent(cev);
+ 		}
++		case SDL_EVENT_DROP_BEGIN:
++		case SDL_EVENT_DROP_FILE:
++		case SDL_EVENT_DROP_POSITION:
++		case SDL_EVENT_DROP_COMPLETE:
++		{
++			const auto& cev = ev.drop;
++			return handleEvent(cev);
++		}
+ 		default:
+ 			return true;
+ 	}
+@@ -1501,17 +1725,28 @@ bool SdlContext::useLocalScale() const
+ 	return !dynResize && !fs && !multimon;
+ }
+ 
+-bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects)
++bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects, bool present)
+ {
+ 	for (auto& window : _windows)
+ 	{
+-		if (!drawToWindow(window.second, rects))
++		if (!drawToWindow(window.second, rects, present))
+ 			return FALSE;
+ 	}
+ 
+ 	return TRUE;
+ }
+ 
++/* Jedes SDL_RenderPresent wartet auf den Bildwechsel. Deshalb werden alle
++ * anstehenden Aktualisierungen zuerst gesammelt und erst danach einmal
++ * dargestellt. */
++bool SdlContext::presentWindows()
++{
++	for (auto& window : _windows)
++		window.second.updateSurface();
++
++	return TRUE;
++}
++
+ BOOL SdlContext::desktopResize(rdpContext* context)
+ {
+ 	rdpGdi* gdi = nullptr;
+diff --git a/client/SDL/SDL3/sdl_context.hpp b/client/SDL/SDL3/sdl_context.hpp
+index 482d84b..a54653a 100644
+--- a/client/SDL/SDL3/sdl_context.hpp
++++ b/client/SDL/SDL3/sdl_context.hpp
+@@ -111,8 +111,11 @@ class SdlContext
+ 	[[nodiscard]] bool updateWindowList();
+ 	[[nodiscard]] bool updateWindow(SDL_WindowID id);
+ 
+-	[[nodiscard]] bool drawToWindows(const std::vector<SDL_Rect>& rects = {});
+-	[[nodiscard]] bool drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects = {});
++	[[nodiscard]] bool drawToWindows(const std::vector<SDL_Rect>& rects = {},
++	                                 bool present = true);
++	[[nodiscard]] bool drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects = {},
++	                                bool present = true);
++	[[nodiscard]] bool presentWindows();
+ 	[[nodiscard]] bool minimizeAllWindows();
+ 	[[nodiscard]] int exitCode() const;
+ 	[[nodiscard]] SDL_PixelFormat pixelFormat() const;
+@@ -181,6 +184,12 @@ class SdlContext
+ 	[[nodiscard]] bool handleEvent(const SDL_MouseWheelEvent& ev);
+ 	[[nodiscard]] bool handleEvent(const SDL_TouchFingerEvent& ev);
+ 
++	/* RemoteDesk: Ziehen und Fallenlassen vom Mac in die Sitzung. */
++	[[nodiscard]] bool handleEvent(const SDL_DropEvent& ev);
++	[[nodiscard]] bool finishDrop();
++	/* RemoteDesk: Gegenrichtung, Ziehen aus der Sitzung auf den Mac. */
++	[[nodiscard]] bool startDragOut();
++
+ 	void addOrUpdateDisplay(SDL_DisplayID id);
+ 	void deleteDisplay(SDL_DisplayID id);
+ 
+@@ -239,6 +248,16 @@ class SdlContext
+ 
+ 	uint32_t _windowWidth = 0;
+ 	uint32_t _windowHeigth = 0;
++
++	/* RemoteDesk: waehrend eines Ablegens gesammelte Dateien und die Stelle,
++	 * an der losgelassen wurde (in Fensterkoordinaten). */
++	std::vector<std::string> _dropPaths;
++	SDL_WindowID _dropWindow = 0;
++	float _dropX = 0.0f;
++	float _dropY = 0.0f;
++	bool _dragOutArmed = false;
++	bool _dragOutDone = false;
++	SDL_WindowID _dragOutWindow = 0;
+ 	WinPREvent _windowsCreatedEvent;
+ 	std::thread _thread;
+ 	std::vector<COMMAND_LINE_ARGUMENT_A> _args;
+diff --git a/client/SDL/SDL3/sdl_freerdp.cpp b/client/SDL/SDL3/sdl_freerdp.cpp
+index 7d6e414..9f7d412 100644
+--- a/client/SDL/SDL3/sdl_freerdp.cpp
++++ b/client/SDL/SDL3/sdl_freerdp.cpp
+@@ -234,13 +234,23 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
+ 					break;
+ 					case SDL_EVENT_USER_UPDATE:
+ 					{
++						/* Die Warteschlange wird vollständig geleert und erst am
++						 * Ende ein einziges Mal dargestellt. Ein Present je Paket
++						 * würde je Bildaufbau vielfach auf den Bildwechsel warten.
++						 * Ein leeres Paket beendet die Schleife und darf nicht als
++						 * Vollbildauffrischung gezeichnet werden. */
+ 						std::vector<SDL_Rect> rectangles;
+-						do
++						bool drawn = false;
++						while (!(rectangles = sdl->pop()).empty())
+ 						{
+-							rectangles = sdl->pop();
+-							if (!sdl->drawToWindows(rectangles))
++							if (!sdl->drawToWindows(rectangles, false))
+ 								throw ErrorMsg{ -1, windowEvent.type, "sdl->drawToWindows" };
+-						} while (!rectangles.empty());
++							drawn = true;
++						}
++						/* Ohne neue Bildinhalte wäre das Darstellen nur eine
++						 * weitere Wartezeit auf den Bildwechsel. */
++						if (drawn && !sdl->presentWindows())
++							throw ErrorMsg{ -1, windowEvent.type, "sdl->presentWindows" };
+ 					}
+ 					break;
+ 					case SDL_EVENT_USER_CREATE_WINDOWS:
+diff --git a/client/common/client_cliprdr_file.c b/client/common/client_cliprdr_file.c
+index cdabf20..69e0632 100644
+--- a/client/common/client_cliprdr_file.c
++++ b/client/common/client_cliprdr_file.c
+@@ -178,6 +178,27 @@ struct cliprdr_file_context
+ 	fuse_ino_t next_ino;
+ 	UINT32 next_clip_data_id;
+ 	UINT32 next_stream_id;
++#else
++	/* Ohne FUSE holt RemoteDeskRDP die Dateien wirklich ab und legt sie in
++	 * einem Ordner unterhalb von path ab. Der Synthesizer in WinPR baut die
++	 * text/uri-list allein aus delegate->basePath und den Namen aus der
++	 * Beschreibungsliste; er prueft nicht, ob die Dateien existieren. Es
++	 * genuegt also, sie vor dem Einfuegen dort abzulegen. */
++	HANDLE dl_thread;
++	BOOL dl_done;
++	HANDLE dl_reply_event;  /* Antwort des Servers eingetroffen */
++	HANDLE dl_abort;        /* Sitzung endet, Abholung abbrechen */
++	CRITICAL_SECTION dl_lock;
++	BOOL dl_lock_ready;
++	UINT32 dl_stream_id;    /* Kennung der gerade offenen Anfrage */
++	BOOL dl_reply_ok;
++	BYTE* dl_reply_data;
++	UINT32 dl_reply_size;
++	FILEDESCRIPTORW* dl_files;
++	UINT32 dl_n_files;
++	char* dl_dir;
++	BOOL dl_have_clip_data_id;
++	UINT32 dl_clip_data_id;
+ #endif
+ 
+ 	/* File clipping */
+@@ -1644,6 +1665,366 @@ static UINT cliprdr_file_context_server_file_contents_request(
+ 	return CHANNEL_RC_OK;
+ }
+ 
++#if !defined(WITH_FUSE)
++/* ------------------------------------------------------------------------
++ * Abholung ohne FUSE (macOS)
++ *
++ * FreeRDP setzt fuer die Richtung Sitzung -> Mac sonst FUSE voraus: der
++ * Server liefert nur eine Beschreibungsliste, die Inhalte muessen einzeln
++ * per CB_FILECONTENTS_REQUEST angefordert werden. Unter macOS gibt es kein
++ * FUSE ohne fremde Kernel-Erweiterung, deshalb holt RemoteDeskRDP die
++ * Dateien vollstaendig ab und legt sie in einem echten Ordner ab.
++ *
++ * Ablauf: update_server_data merkt sich die Liste und startet den Thread
++ * unten. Der Thread fordert Stueck fuer Stueck an; die Antworten treffen im
++ * Kanal-Thread ein und wecken ihn. Der SDL-Thread wartet vor dem Einfuegen
++ * per cliprdr_file_context_wait_for_files() auf das Ende. Warten darf nur
++ * der SDL-Thread - wartete der Kanal-Thread, koennte er die Antworten nicht
++ * mehr entgegennehmen und die Abholung liefe in die Zeitsperre.
++ * ------------------------------------------------------------------------ */
++
++#define DOWNLOAD_CHUNK_SIZE (1024UL * 1024UL)
++#define DOWNLOAD_REPLY_TIMEOUT_MS 30000
++
++static void cliprdr_download_clear_reply(CliprdrFileContext* file)
++{
++	free(file->dl_reply_data);
++	file->dl_reply_data = nullptr;
++	file->dl_reply_size = 0;
++	file->dl_reply_ok = FALSE;
++}
++
++static UINT cliprdr_file_context_server_file_contents_response(
++    CliprdrClientContext* cliprdr_context,
++    const CLIPRDR_FILE_CONTENTS_RESPONSE* file_contents_response)
++{
++	WINPR_ASSERT(cliprdr_context);
++	WINPR_ASSERT(file_contents_response);
++
++	CliprdrFileContext* file = cliprdr_context->custom;
++	WINPR_ASSERT(file);
++
++	EnterCriticalSection(&file->dl_lock);
++	if (file_contents_response->streamId != file->dl_stream_id)
++	{
++		/* Verspaetete Antwort einer abgebrochenen Anfrage. */
++		LeaveCriticalSection(&file->dl_lock);
++		return CHANNEL_RC_OK;
++	}
++
++	cliprdr_download_clear_reply(file);
++
++	if (file_contents_response->common.msgFlags & CB_RESPONSE_OK)
++	{
++		const UINT32 size = file_contents_response->cbRequested;
++		if (size == 0)
++			file->dl_reply_ok = TRUE;
++		else
++		{
++			BYTE* copy = malloc(size);
++			if (copy)
++			{
++				memcpy(copy, file_contents_response->requestedData, size);
++				file->dl_reply_data = copy;
++				file->dl_reply_size = size;
++				file->dl_reply_ok = TRUE;
++			}
++		}
++	}
++	LeaveCriticalSection(&file->dl_lock);
++
++	(void)SetEvent(file->dl_reply_event);
++	return CHANNEL_RC_OK;
++}
++
++/* Sendet eine Anfrage und wartet auf die Antwort. Bei Erfolg gehoert der
++ * Speicher unter *data dem Aufrufer. */
++static BOOL cliprdr_download_request(CliprdrFileContext* file, UINT32 listIndex, UINT32 flags,
++                                     UINT64 offset, UINT32 cbRequested, BYTE** data, UINT32* size)
++{
++	CLIPRDR_FILE_CONTENTS_REQUEST request = WINPR_C_ARRAY_INIT;
++
++	if (data)
++		*data = nullptr;
++	if (size)
++		*size = 0;
++
++	if (!file->context)
++		return FALSE;
++
++	(void)ResetEvent(file->dl_reply_event);
++
++	EnterCriticalSection(&file->dl_lock);
++	cliprdr_download_clear_reply(file);
++	const UINT32 streamId = ++file->dl_stream_id;
++	LeaveCriticalSection(&file->dl_lock);
++
++	request.common.msgType = CB_FILECONTENTS_REQUEST;
++	request.streamId = streamId;
++	request.listIndex = listIndex;
++	request.dwFlags = flags;
++	request.nPositionLow = (UINT32)(offset & 0xFFFFFFFF);
++	request.nPositionHigh = (UINT32)(offset >> 32);
++	request.cbRequested = cbRequested;
++	request.haveClipDataId = file->dl_have_clip_data_id;
++	request.clipDataId = file->dl_clip_data_id;
++
++	if (file->context->ClientFileContentsRequest(file->context, &request))
++	{
++		WLog_Print(file->log, WLOG_ERROR, "FileContentsRequest fuer Eintrag %" PRIu32 " scheiterte",
++		           listIndex);
++		return FALSE;
++	}
++
++	HANDLE handles[2] = { file->dl_reply_event, file->dl_abort };
++	const DWORD status = WaitForMultipleObjects(2, handles, FALSE, DOWNLOAD_REPLY_TIMEOUT_MS);
++	if (status != WAIT_OBJECT_0)
++	{
++		WLog_Print(file->log, WLOG_ERROR,
++		           "Keine Antwort auf FileContentsRequest fuer Eintrag %" PRIu32, listIndex);
++		EnterCriticalSection(&file->dl_lock);
++		file->dl_stream_id++; /* spaetere Antwort verwerfen */
++		LeaveCriticalSection(&file->dl_lock);
++		return FALSE;
++	}
++
++	BOOL rc = FALSE;
++	EnterCriticalSection(&file->dl_lock);
++	if (file->dl_reply_ok)
++	{
++		if (data)
++		{
++			*data = file->dl_reply_data;
++			*size = file->dl_reply_size;
++			file->dl_reply_data = nullptr;
++			file->dl_reply_size = 0;
++		}
++		rc = TRUE;
++	}
++	cliprdr_download_clear_reply(file);
++	LeaveCriticalSection(&file->dl_lock);
++
++	return rc;
++}
++
++/* Wandelt den Namen aus der Beschreibungsliste in einen lokalen Pfad. Der
++ * Server trennt mit Backslash, macOS mit Schraegstrich. */
++static char* cliprdr_download_local_path(CliprdrFileContext* file, const FILEDESCRIPTORW* desc)
++{
++	char name[520] = WINPR_C_ARRAY_INIT;
++
++	if (ConvertWCharNToUtf8(desc->cFileName, ARRAYSIZE(desc->cFileName), name, ARRAYSIZE(name)) < 0)
++		return nullptr;
++
++	/* Kein Ausbrechen aus dem Zielordner. */
++	if (strstr(name, "..") || name[0] == '/' || name[0] == '\\')
++	{
++		WLog_Print(file->log, WLOG_WARN, "Verdaechtiger Dateiname \"%s\" wird uebersprungen", name);
++		return nullptr;
++	}
++
++	for (char* p = name; *p; p++)
++	{
++		if (*p == '\\')
++			*p = '/';
++	}
++
++	return GetCombinedPath(file->dl_dir, name);
++}
++
++static BOOL cliprdr_download_make_parents(const char* path)
++{
++	char* copy = _strdup(path);
++	if (!copy)
++		return FALSE;
++
++	BOOL rc = TRUE;
++	for (char* p = copy + 1; *p; p++)
++	{
++		if (*p != '/')
++			continue;
++		*p = '\0';
++		if (!winpr_PathFileExists(copy) && !winpr_PathMakePath(copy, nullptr))
++		{
++			rc = FALSE;
++			break;
++		}
++		*p = '/';
++	}
++
++	free(copy);
++	return rc;
++}
++
++static BOOL cliprdr_download_one(CliprdrFileContext* file, UINT32 index)
++{
++	const FILEDESCRIPTORW* desc = &file->dl_files[index];
++
++	char* path = cliprdr_download_local_path(file, desc);
++	if (!path)
++		return FALSE;
++
++	BOOL rc = FALSE;
++	const BOOL isDirectory =
++	    (desc->dwFlags & FD_ATTRIBUTES) && (desc->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
++
++	if (isDirectory)
++	{
++		rc = winpr_PathFileExists(path) || winpr_PathMakePath(path, nullptr);
++		if (!rc)
++			WLog_Print(file->log, WLOG_ERROR, "Ordner \"%s\" liess sich nicht anlegen", path);
++		goto out;
++	}
++
++	if (!cliprdr_download_make_parents(path))
++	{
++		WLog_Print(file->log, WLOG_ERROR, "Elternordner von \"%s\" liess sich nicht anlegen", path);
++		goto out;
++	}
++
++	UINT64 total = 0;
++	if (desc->dwFlags & FD_FILESIZE)
++		total = ((UINT64)desc->nFileSizeHigh << 32) | desc->nFileSizeLow;
++	else
++	{
++		BYTE* sizeData = nullptr;
++		UINT32 sizeLen = 0;
++		if (!cliprdr_download_request(file, index, FILECONTENTS_SIZE, 0, sizeof(UINT64), &sizeData,
++		                              &sizeLen))
++			goto out;
++		if (sizeLen >= sizeof(UINT64))
++			memcpy(&total, sizeData, sizeof(UINT64));
++		free(sizeData);
++	}
++
++	FILE* fp = winpr_fopen(path, "wb");
++	if (!fp)
++	{
++		WLog_Print(file->log, WLOG_ERROR, "Datei \"%s\" liess sich nicht anlegen", path);
++		goto out;
++	}
++
++	UINT64 offset = 0;
++	rc = TRUE;
++	while (offset < total)
++	{
++		const UINT64 remaining = total - offset;
++		const UINT32 want =
++		    (remaining > DOWNLOAD_CHUNK_SIZE) ? DOWNLOAD_CHUNK_SIZE : (UINT32)remaining;
++
++		BYTE* chunk = nullptr;
++		UINT32 got = 0;
++		if (!cliprdr_download_request(file, index, FILECONTENTS_RANGE, offset, want, &chunk, &got))
++		{
++			rc = FALSE;
++			break;
++		}
++
++		if (got == 0)
++		{
++			free(chunk);
++			WLog_Print(file->log, WLOG_WARN, "\"%s\" endete nach %" PRIu64 " von %" PRIu64 " Byte",
++			           path, offset, total);
++			break;
++		}
++
++		const size_t written = fwrite(chunk, 1, got, fp);
++		free(chunk);
++		if (written != got)
++		{
++			WLog_Print(file->log, WLOG_ERROR, "Schreibfehler in \"%s\"", path);
++			rc = FALSE;
++			break;
++		}
++		offset += got;
++	}
++
++	(void)fclose(fp);
++	if (rc)
++		WLog_Print(file->log, WLOG_DEBUG, "\"%s\" abgeholt (%" PRIu64 " Byte)", path, offset);
++
++out:
++	free(path);
++	return rc;
++}
++
++static DWORD WINAPI cliprdr_download_thread(LPVOID arg)
++{
++	CliprdrFileContext* file = arg;
++
++	UINT32 failed = 0;
++	for (UINT32 i = 0; i < file->dl_n_files; i++)
++	{
++		if (WaitForSingleObject(file->dl_abort, 0) == WAIT_OBJECT_0)
++			break;
++		if (!cliprdr_download_one(file, i))
++			failed++;
++	}
++
++	if (failed)
++		WLog_Print(file->log, WLOG_WARN, "%" PRIu32 " von %" PRIu32 " Eintraegen fehlgeschlagen",
++		           failed, file->dl_n_files);
++	else
++		WLog_Print(file->log, WLOG_DEBUG, "%" PRIu32 " Eintraege abgeholt", file->dl_n_files);
++
++	return 0;
++}
++
++static void cliprdr_download_stop(CliprdrFileContext* file)
++{
++	if (!file->dl_thread)
++		return;
++
++	(void)SetEvent(file->dl_abort);
++	(void)WaitForSingleObject(file->dl_thread, INFINITE);
++	(void)CloseHandle(file->dl_thread);
++	file->dl_thread = nullptr;
++	(void)ResetEvent(file->dl_abort);
++}
++
++BOOL cliprdr_file_context_wait_for_files(CliprdrFileContext* file, UINT32 timeoutMs)
++{
++	if (!file)
++		return TRUE;
++
++	/* Erst hier wird geholt: der Aufrufer fuegt gerade ein. Beim blossen
++	 * Kopieren im Gast bleibt es bei der Namensliste. */
++	if (!file->dl_thread)
++	{
++		if (file->dl_done || file->dl_n_files == 0 || !file->dl_dir)
++			return TRUE;
++
++		file->dl_thread = CreateThread(nullptr, 0, cliprdr_download_thread, file, 0, nullptr);
++		if (!file->dl_thread)
++		{
++			WLog_Print(file->log, WLOG_ERROR, "Abholung liess sich nicht starten");
++			return FALSE;
++		}
++		WLog_Print(file->log, WLOG_DEBUG, "Hole %" PRIu32 " Eintraege nach \"%s\"",
++		           file->dl_n_files, file->dl_dir);
++	}
++
++	const DWORD status = WaitForSingleObject(file->dl_thread, timeoutMs);
++	if (status != WAIT_OBJECT_0)
++	{
++		WLog_Print(file->log, WLOG_WARN, "Abholung laeuft noch, Einfuegen kann unvollstaendig sein");
++		return FALSE;
++	}
++
++	(void)CloseHandle(file->dl_thread);
++	file->dl_thread = nullptr;
++	file->dl_done = TRUE;
++	return TRUE;
++}
++#else
++BOOL cliprdr_file_context_wait_for_files(CliprdrFileContext* file, UINT32 timeoutMs)
++{
++	WINPR_UNUSED(file);
++	WINPR_UNUSED(timeoutMs);
++	return TRUE;
++}
++#endif
++
+ BOOL cliprdr_file_context_init(CliprdrFileContext* file, CliprdrClientContext* cliprdr)
+ {
+ 	WINPR_ASSERT(file);
+@@ -1661,6 +2042,7 @@ BOOL cliprdr_file_context_init(CliprdrFileContext* file, CliprdrClientContext* c
+ 	CliprdrFuseFile* root_dir = fuse_file_new_root(file);
+ 	return root_dir != nullptr;
+ #else
++	cliprdr->ServerFileContentsResponse = cliprdr_file_context_server_file_contents_response;
+ 	return TRUE;
+ #endif
+ }
+@@ -1696,6 +2078,10 @@ BOOL cliprdr_file_context_uninit(CliprdrFileContext* file, CliprdrClientContext*
+ 		if (!clear_all_selections(file))
+ 			return FALSE;
+ 	}
++#else
++	/* Erst die Abholung anhalten: sie greift auf den Kanal zu, der gleich
++	 * geschlossen wird. */
++	cliprdr_download_stop(file);
+ #endif
+ 
+ 	HashTable_Clear(file->local_streams);
+@@ -1705,9 +2091,7 @@ BOOL cliprdr_file_context_uninit(CliprdrFileContext* file, CliprdrClientContext*
+ 
+ 	if (cliprdr)
+ 	{
+-#if defined(WITH_FUSE)
+ 	cliprdr->ServerFileContentsResponse = nullptr;
+-#endif
+ 	}
+ 
+ 	return TRUE;
+@@ -2069,7 +2453,64 @@ fail:
+ 	free(files);
+ 	return rc;
+ #else
+-	return FALSE;
++	WINPR_ASSERT(file_context);
++	WINPR_ASSERT(clip);
++
++	if (size > UINT32_MAX)
++		return FALSE;
++
++	FILEDESCRIPTORW* files = nullptr;
++	UINT32 n_files = 0;
++	if (cliprdr_parse_file_list(data, (UINT32)size, &files, &n_files))
++	{
++		WLog_Print(file_context->log, WLOG_ERROR, "Dateiliste liess sich nicht lesen");
++		return FALSE;
++	}
++
++	/* Eine noch laufende Abholung gehoert zur vorigen Zwischenablage. */
++	cliprdr_download_stop(file_context);
++	file_context->dl_done = FALSE;
++
++	free(file_context->dl_files);
++	file_context->dl_files = files;
++	file_context->dl_n_files = n_files;
++
++	/* Je Uebertragung ein eigener Ordner: sonst mischen sich gleichnamige
++	 * Dateien aus zwei Kopiervorgaengen. */
++	free(file_context->dl_dir);
++	file_context->dl_dir = nullptr;
++
++	char folder[32] = WINPR_C_ARRAY_INIT;
++	(void)_snprintf(folder, sizeof(folder), "clip-%" PRIu32, file_context->dl_stream_id + 1);
++	file_context->dl_dir = GetCombinedPath(file_context->path, folder);
++	if (!file_context->dl_dir || !winpr_PathMakePath(file_context->dl_dir, nullptr))
++	{
++		WLog_Print(file_context->log, WLOG_ERROR, "Zielordner liess sich nicht anlegen");
++		return FALSE;
++	}
++
++	/* Ohne Sperre: die Abholung startet sofort nach der Liste, das Zeitfenster
++	 * bis zum Zugriff ist minimal. Sperren waere nur noetig, wenn zwischen
++	 * Liste und Abruf viel Zeit verginge. */
++	file_context->dl_have_clip_data_id = FALSE;
++	file_context->dl_clip_data_id = 0;
++
++	/* Der Synthesizer baut die uri-list allein aus diesem Pfad. */
++	free(file_context->exposed_path);
++	file_context->exposed_path = _strdup(file_context->dl_dir);
++	if (!file_context->exposed_path)
++		return FALSE;
++
++	wClipboardDelegate* delegate = ClipboardGetDelegate(clip);
++	WINPR_ASSERT(delegate);
++	delegate->basePath = file_context->exposed_path;
++
++	/* Der Thread startet erst, wenn wirklich eingefuegt wird (siehe
++	 * cliprdr_file_context_wait_for_files). Sonst laedt jedes Kopieren im
++	 * Gast sofort alles herunter, auch wenn niemand einfuegen will. */
++	WLog_Print(file_context->log, WLOG_DEBUG, "%" PRIu32 " Eintraege vorgemerkt nach \"%s\"",
++	           n_files, file_context->dl_dir);
++	return TRUE;
+ #endif
+ }
+ 
+@@ -2133,9 +2574,23 @@ void cliprdr_file_context_free(CliprdrFileContext* file)
+ 	HashTable_Free(file->clip_data_table);
+ 	HashTable_Free(file->inode_table);
+ 
++#endif
++#if !defined(WITH_FUSE)
++	cliprdr_download_stop(file);
++	if (file->dl_abort)
++		(void)CloseHandle(file->dl_abort);
++	if (file->dl_reply_event)
++		(void)CloseHandle(file->dl_reply_event);
++	if (file->dl_lock_ready)
++		DeleteCriticalSection(&file->dl_lock);
++	free(file->dl_reply_data);
++	free(file->dl_files);
++	free(file->dl_dir);
+ #endif
+ 	HashTable_Free(file->local_streams);
+-	winpr_RemoveDirectory(file->path);
++	/* Die abgeholten Dateien liegen in Unterordnern; winpr_RemoveDirectory
++	 * raeumt nur einen leeren Ordner ab. */
++	winpr_RemoveDirectory_RecursiveA(file->path);
+ 	free(file->path);
+ 	free(file->exposed_path);
+ 	free(file);
+@@ -2185,7 +2640,13 @@ static BOOL cliprdr_local_file_new(CliprdrFileContext* context, CliprdrLocalFile
+ 
+ 	*f = empty;
+ 	f->context = context;
+-	f->name = winpr_str_url_decode(path, strlen(path));
++	/* RemoteDesk: Der Aufrufer liefert bereits einen echten Dateisystempfad.
++	 * Vorher wurde hier prozentdekodiert, waehrend is_directory() und
++	 * add_directory() denselben Pfad ungeschuetzt kodiert weiterverwendeten --
++	 * ein Ordner namens "Mein Ordner" kam als "Mein%20Ordner" an, wurde nicht
++	 * als Verzeichnis erkannt und sein Inhalt nie uebertragen. Dekodiert wird
++	 * jetzt einmalig in cliprdr_local_stream_update(). */
++	f->name = _strdup(path);
+ 	if (!f->name)
+ 		goto fail;
+ 
+@@ -2333,15 +2794,25 @@ static BOOL cliprdr_local_stream_update(CliprdrLocalStream* stream, const char*
+ 		else if (strncmp("file:/", ptr, 6) == 0)
+ 			name = &ptr[5];
+ 
+-		if (!append_entry(stream, name))
++		/* RemoteDesk: Die Liste kommt als URI-Liste, also prozentkodiert.
++		 * Hier ist die einzige Stelle, an der dekodiert werden darf: alles
++		 * dahinter -- append_entry(), is_directory(), add_directory() und die
++		 * dort zusammengesetzten Kindpfade -- arbeitet mit echten
++		 * Dateisystempfaden. Wurde erst spaeter dekodiert, schlug
++		 * is_directory() bei jedem Namen mit Leerzeichen, Umlaut, '%' oder '#'
++		 * fehl und der Ordnerinhalt fehlte vollstaendig. */
++		char* decoded = winpr_str_url_decode(name, strlen(name));
++		if (!decoded)
++			goto fail;
++
++		const BOOL added = append_entry(stream, decoded);
++		const BOOL isdir = added && is_directory(decoded);
++		const BOOL res = !isdir || add_directory(stream, decoded);
++		free(decoded);
++
++		if (!added || !res)
+ 			goto fail;
+ 
+-		if (is_directory(name))
+-		{
+-			const BOOL res = add_directory(stream, name);
+-			if (!res)
+-				goto fail;
+-		}
+ 		ptr = strtok_s(nullptr, "\r\n", &saveptr);
+ 	}
+ 
+@@ -2474,6 +2945,15 @@ CliprdrFileContext* cliprdr_file_context_new(void* context)
+ 	if (!create_base_path(file))
+ 		goto fail;
+ 
++#if !defined(WITH_FUSE)
++	if (!(file->dl_reply_event = CreateEvent(nullptr, TRUE, FALSE, nullptr)))
++		goto fail;
++	if (!(file->dl_abort = CreateEvent(nullptr, TRUE, FALSE, nullptr)))
++		goto fail;
++	InitializeCriticalSection(&file->dl_lock);
++	file->dl_lock_ready = TRUE;
++#endif
++
+ #if defined(WITH_FUSE)
+ 	if (!(file->fuse_start_sync = CreateEvent(nullptr, TRUE, FALSE, nullptr)))
+ 		goto fail;
+@@ -2595,6 +3075,9 @@ BOOL cliprdr_file_context_has_local_support(CliprdrFileContext* file)
+ 
+ #if defined(WITH_FUSE)
+ 	return TRUE;
++#elif defined(__APPLE__)
++	/* Auf macOS holt RemoteDeskRDP die Dateien statt sie einzuhaengen. */
++	return TRUE;
+ #else
+ 	return FALSE;
+ #endif
+diff --git a/include/freerdp/client/client_cliprdr_file.h b/include/freerdp/client/client_cliprdr_file.h
+index 513ef05..3eaf7ba 100644
+--- a/include/freerdp/client/client_cliprdr_file.h
++++ b/include/freerdp/client/client_cliprdr_file.h
+@@ -47,6 +47,22 @@ extern "C"
+ 	WINPR_ATTR_NODISCARD
+ 	FREERDP_API BOOL cliprdr_file_context_has_local_support(CliprdrFileContext* file);
+ 
++	/** Wartet, bis die vom Server angeforderten Dateien lokal abgelegt sind.
++	 *
++	 *  Ohne FUSE holt der Client die Dateien wirklich ab, statt sie
++	 *  einzuhaengen. Vor dem Einfuegen muss deshalb gewartet werden, sonst
++	 *  liegen unvollstaendige Dateien vor. Darf nur aus dem Thread gerufen
++	 *  werden, der die Zwischenablage bedient - nicht aus dem Kanal-Thread,
++	 *  der die Antworten des Servers entgegennimmt.
++	 *
++	 *  @param file Der Dateikontext
++	 *  @param timeoutMs Hoechste Wartezeit in Millisekunden
++	 *
++	 *  @return \b TRUE wenn die Abholung abgeschlossen ist
++	 */
++	FREERDP_API BOOL cliprdr_file_context_wait_for_files(CliprdrFileContext* file,
++	                                                     UINT32 timeoutMs);
++
+ 	/**! \brief sets state of local file paste support
+ 	 *
+ 	 * \param file the file context to update
+diff --git a/scripts/bundle-mac-os.sh b/scripts/bundle-mac-os.sh
+index e4db4a5..d887477 100755
+--- a/scripts/bundle-mac-os.sh
++++ b/scripts/bundle-mac-os.sh
+@@ -115,6 +115,7 @@ echo "build target [$DEPLOYMENT_TARGET]"
+ CMAKE_ARGS="-DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON \
+ 	-DCMAKE_VERBOSE_MAKEFILE=ON \
+ 	-DCMAKE_BUILD_TYPE=Release \
++	-DWITH_CLIENT_MAC=ON \
+  	-DWITH_MANPAGES=OFF \
+ 	-DBUILD_SHARED_LIBS=ON \
+ 	-DCMAKE_OSX_ARCHITECTURES=$CMAKE_ARCHS \
+@@ -147,6 +148,16 @@ if [ ! -d $SRC ]; then
+   git clone --depth 1 -b v2.0.3 https://github.com/mstorsjo/fdk-aac.git
+ fi
+ 
++# RemoteDesk: eigener SDL-Patch.  SDL gleicht die macOS-Zwischenablage sonst nur
++# beim Fensterwechsel ab, wodurch in anderen Programmen kopierte Inhalte nie an
++# den Server gemeldet werden.  Muss nach dem Klonen laufen, damit ein frischer
++# Quellbaum den Patch ebenfalls erhält.
++if [ -n "${REMOTEDESK_SDL_PATCH:-}" ]; then
++  git -C "$SRC/SDL" checkout -- src/video/cocoa/SDL_cocoaevents.m
++  git -C "$SRC/SDL" apply "$REMOTEDESK_SDL_PATCH"
++  echo "Applied RemoteDesk SDL patch"
++fi
++
+ if [ -d $INSTALL ]; then
+   rm -rf $INSTALL
+ fi
+diff --git a/client/SDL/SDL3/sdl_window.cpp b/client/SDL/SDL3/sdl_window.cpp
+index a683dad..a1ffd1e 100644
+--- a/client/SDL/SDL3/sdl_window.cpp
++++ b/client/SDL/SDL3/sdl_window.cpp
+@@ -288,6 +288,14 @@ void SdlWindow::ensureRenderTarget()
+ 	if (!_renderTarget)
+ 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "SDL_CreateTexture (render target): %s",
+ 		             SDL_GetError());
++	else
++		/* BGRA32 hat einen Alphakanal, also blendet SDL3 die Textur
++		 * standardmaessig. Der Alphakanal des GDI-Puffers ist aber keine
++		 * Deckkraft: bei 24 bpp bleibt er teilweise leer, bei 32 bpp sendet
++		 * xrdp durchgehend Null. Ohne diese Zeile verschwindet das Bild
++		 * ganz oder teilweise. Der X11-Client umgeht das, indem er BGRX32
++		 * ohne Alphakanal waehlt. */
++		SDL_SetTextureBlendMode(_renderTarget, SDL_BLENDMODE_NONE);
+ }
+ 
+ bool SdlWindow::drawRect(SDL_Surface* surface, SDL_Point offset, const SDL_Rect& srcRect)
+@@ -506,6 +514,9 @@ bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& ds
+ 			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "SDL_CreateTexture: %s", SDL_GetError());
+ 			return false;
+ 		}
++		/* Siehe ensureRenderTarget(): der Alphakanal des GDI-Puffers darf
++		 * nicht als Deckkraft ausgewertet werden. */
++		SDL_SetTextureBlendMode(_gdiTexture, SDL_BLENDMODE_NONE);
+ 		_gdiTextureW = surface->w;
+ 		_gdiTextureH = surface->h;
+ 	}

@@ -1,0 +1,8 @@
+dist/
+node_modules/
+.build/
+src-tauri/target/
+src-tauri/resources/freerdp/MacFreeRDP.app/
+.DS_Store
+*.dmg
+*.log

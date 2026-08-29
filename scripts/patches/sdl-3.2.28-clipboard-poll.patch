@@ -1,0 +1,514 @@
+RemoteDesk-Patch für SDL 3.2.28 (release-3.2.28)
+
+Zweck
+  1. macOS meldet Änderungen der Zwischenablage nicht als Ereignis.  SDL
+     gleicht sie deshalb nur in windowDidBecomeKey ab.  Solange das
+     RDP-Fenster den Tastaturfokus behält, bemerkt SDL nie, dass in einem
+     anderen Programm etwas kopiert wurde -- der FreeRDP-Client meldet dem
+     Server dauerhaft "ClientFormatList: numFormats: 0" und Einfügen in der
+     Sitzung bleibt leer.  Nachgemessen mit /log-level:DEBUG gegen xrdp:
+     Server -> Mac funktionierte, Mac -> Server nie.
+
+  2. Kopierte Dateien legt macOS als "public.file-url" ab, einen Eintrag je
+     Datei.  FreeRDP erwartet wie alle freedesktop-Programme "text/uri-list"
+     mit allen Dateien in einer Liste und bot ohne diesen Typ nie das Format
+     FileGroupDescriptorW an.  Cocoa_GetClipboardData bricht zudem beim ersten
+     passenden Eintrag ab, eine Mehrfachauswahl ginge also ohnehin verloren.
+
+  3. Umgekehrt kennt macOS "text/uri-list" nicht.  SDL uebersetzt jeden
+     Mime-Typ mit UTTypeCreatePreferredIdentifierForTag; fuer "text/uri-list"
+     gibt es keinen registrierten UTI, es entsteht ein dynamischer Typ
+     ("dyn...").  Den erkennt der Finder nicht als Datei, das Menue
+     "Einfuegen" bleibt aus und der Client wird nie nach den Daten gefragt.
+     Nachgemessen gegen den Linux-Host: der Server bot FileGroupDescriptorW
+     an, es folgte aber kein einziger ClientFormatDataRequest.
+
+  4. Der Finder legt keine Pfad-URLs ab, sondern File-Reference-URLs der Form
+     "file:///.file/id=6571367.121757495".  Woertlich gelesen ergibt das den
+     Pfad "/.file/id=...", den es nicht gibt.  Nachgemessen: winpr meldete
+     "stat failed with Not a directory [20]", lieferte eine leere Dateiliste
+     und der Gast bot das Einfuegen zwar an, tat aber nichts.
+
+  5. Enthaelt das Bundle ein Main-Nib (NSMainNibFile), so laedt SDL es fuer das
+     Menue.  Cocoa zeigt dabei jedes Fenster an, das im Nib "Visible At Launch"
+     ist.  Der SDL-Client von FreeRDP liegt im Bundle des Cocoa-Clients und
+     erbt dessen MainMenu.nib, das ein Sitzungsfenster von 1024x768 enthaelt.
+     Beim Start jeder Sitzung stand daher ein zweites, leeres Fenster mit dem
+     Titel "FreeRDP" neben dem eigentlichen.  Nachgemessen mit
+     CGWindowListCopyWindowInfo: ein Prozess, zwei Fenster -- das Sitzungs-
+     fenster und eines von 1024x800 (1024x768 zuzueglich Titelleiste).
+
+Lösung
+  1. Cocoa_PumpEvents gleicht die Zwischenablage zusätzlich gedrosselt ab
+     (höchstens alle 250 ms).  Der Abgleich kostet nur einen Vergleich von
+     [NSPasteboard changeCount] und belastet den Renderpfad nicht.
+
+  2. Der Cocoa-Treiber synthetisiert "text/uri-list": GetMimeTypes meldet den
+     Typ, sobald Datei-URLs vorliegen, Cocoa_GetClipboardData setzt ihn aus
+     allen Einträgen zusammen und Cocoa_HasClipboardData beantwortet ihn.
+     Die Umwandlung nach FileGroupDescriptorW erledigt danach winpr.
+
+  3. Cocoa_SetClipboardData legt zusaetzlich je Datei ein Pasteboard-Element
+     mit "public.file-url" an - genau die Form, die der Finder erwartet.  Die
+     URL liefert ein eigener Datenanbieter erst auf Nachfrage, also beim
+     Einfuegen; blosses Kopieren im Gast loest keine Uebertragung aus.  Er
+     fragt dabei nicht "text/uri-list" ab, sondern den internen Typ
+     "application/x-remotedeskrdp-files", der dem FreeRDP-Client zugleich
+     sagt, dass er die Inhalte fertig abholen soll.
+
+  4. Jede Datei-URL laeuft vorher durch ResolveFileURL: "filePathURL" loest
+     die Kennung in den echten Pfad auf.  Nicht aufloesbare URLs bleiben
+     unveraendert, damit gewoehnliche Pfad-URLs unberuehrt durchlaufen.
+
+  5. LoadMainMenuNibIfAvailable holt die obersten Objekte des Nibs ab und
+     blendet enthaltene NSWindow-Objekte mit "orderOut:" aus.  Das Menue
+     bleibt erhalten.  SDL legt seine Fenster ausschliesslich ueber
+     SDL_CreateWindow an, ein Fenster aus dem Nib kann also nie ein
+     SDL-Fenster sein.
+
+
+  6. RemoteDesk_StartFileDrag startet einen echten macOS-Ziehvorgang.  SDL kann
+     Ablegen nur empfangen (performDragOperation), aber keines beginnen -- eine
+     oeffentliche Schnittstelle dafuer gibt es nicht.  Der FreeRDP-Client holt
+     die Dateien aus dem Gast ueber die Zwischenablage ab und uebergibt die
+     fertigen Pfade hier.  Das Ereignis wird frisch erzeugt statt "currentEvent"
+     zu benutzen, denn zwischen dem Herausziehen und dem Ende des Downloads
+     koennen Sekunden liegen.  Die Quelle liegt in einer statischen Variablen,
+     weil der Ziehvorgang sie nur schwach haelt.
+Anwenden
+  git -C <SDL-Quellbaum> apply sdl-3.2.28-clipboard-poll.patch
+
+  Das übernimmt scripts/build-freerdp-backend.sh automatisch, indem es
+  REMOTEDESK_SDL_PATCH setzt; FreeRDPs scripts/bundle-mac-os.sh wendet den
+  Patch nach dem Klonen an (siehe freerdp-3.26.0-macos-client.patch).
+
+diff --git a/src/video/cocoa/SDL_cocoaclipboard.m b/src/video/cocoa/SDL_cocoaclipboard.m
+index 7039ff6..f83c9e9 100644
+--- a/src/video/cocoa/SDL_cocoaclipboard.m
++++ b/src/video/cocoa/SDL_cocoaclipboard.m
+@@ -28,6 +28,45 @@
+ 
+ #include <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+ 
++/* RemoteDesk: macOS legt kopierte Dateien als "public.file-url" ab, ein Eintrag
++ * je Datei. Anwendungen, die dem freedesktop-Standard folgen (etwa FreeRDP),
++ * erwarten dagegen "text/uri-list" mit allen Dateien in einer Liste. Deshalb
++ * wird dieser Typ hier aus den vorhandenen Datei-URLs zusammengesetzt. */
++static const char *URI_LIST_MIME_TYPE = "text/uri-list";
++/* RemoteDesk: muss zu s_mime_files_ready in sdl_clip.cpp passen. */
++static const char *FILES_READY_MIME_TYPE = "application/x-remotedeskrdp-files";
++static NSString *const FILE_URL_UTI = @"public.file-url";
++
++static BOOL PasteboardHasFileURLs(void)
++{
++    for (NSPasteboardItem *item in [[NSPasteboard generalPasteboard] pasteboardItems]) {
++        if ([item dataForType:FILE_URL_UTI] != nil) {
++            return YES;
++        }
++    }
++    return NO;
++}
++
++/* RemoteDesk: Der Finder legt keine Pfad-URLs ab, sondern File-Reference-URLs
++ * der Form "file:///.file/id=6571367.121757495". Wörtlich gelesen ergibt das
++ * den Pfad "/.file/id=...", den es im Dateisystem nicht gibt – ein Empfänger
++ * scheitert dort beim stat(). "filePathURL" löst die Kennung in den echten
++ * Pfad auf. Lässt sich eine URL nicht auflösen, bleibt sie unverändert. */
++static NSString *ResolveFileURL(NSString *urlString)
++{
++    NSURL *url = [NSURL URLWithString:urlString];
++    if (url != nil) {
++        NSURL *pathURL = [url filePathURL];
++        if (pathURL != nil) {
++            NSString *resolved = [pathURL absoluteString];
++            if (resolved != nil && [resolved length] > 0) {
++                return resolved;
++            }
++        }
++    }
++    return urlString;
++}
++
+ @interface Cocoa_PasteboardDataProvider : NSObject<NSPasteboardItemDataProvider>
+ {
+     SDL_ClipboardDataCallback m_callback;
+@@ -81,6 +120,7 @@ static char **GetMimeTypes(int *pnformats)
+     int formatsSz = 0;
+     NSArray<NSPasteboardItem *> *items = [[NSPasteboard generalPasteboard] pasteboardItems];
+     NSUInteger nitems = [items count];
++    const BOOL hasFileURLs = PasteboardHasFileURLs();
+     if (nitems > 0) {
+         for (NSPasteboardItem *item in items) {
+             NSArray<NSString *> *types = [item types];
+@@ -100,6 +140,11 @@ static char **GetMimeTypes(int *pnformats)
+             }
+         }
+ 
++        if (hasFileURLs) {
++            formatsSz += SDL_strlen(URI_LIST_MIME_TYPE) + 1;
++            ++nformats;
++        }
++
+         new_mime_types = SDL_AllocateTemporaryMemory((nformats + 1) * sizeof(char *) + formatsSz);
+         if (new_mime_types) {
+             int i = 0;
+@@ -124,6 +169,13 @@ static char **GetMimeTypes(int *pnformats)
+                 }
+             }
+ 
++            if (hasFileURLs) {
++                size_t len = SDL_strlen(URI_LIST_MIME_TYPE) + 1;
++                SDL_memcpy(strPtr, URI_LIST_MIME_TYPE, len);
++                new_mime_types[i++] = strPtr;
++                strPtr += len;
++            }
++
+             new_mime_types[nformats] = NULL;
+             *pnformats = nformats;
+         }
+@@ -153,6 +205,101 @@ void Cocoa_CheckClipboardUpdate(SDL_CocoaVideoData *data)
+     }
+ }
+ 
++/* RemoteDesk: Ein Datenanbieter fuer genau eine Datei-URL. macOS kennt
++ * "text/uri-list" nicht - UTTypeCreatePreferredIdentifierForTag macht daraus
++ * einen dynamischen Typ ("dyn."), den der Finder nicht als Datei erkennt, und
++ * das Menue "Einfuegen" bleibt aus. Der Finder erwartet "public.file-url" mit
++ * genau einer URL je Pasteboard-Element. Dieser Anbieter holt beim Zugriff die
++ * vollstaendige Liste ueber den internen Typ (der zugleich den Abruf der
++ * Inhalte abwartet) und gibt daraus seine Zeile zurueck. Erst beim Einfuegen -
++ * blosses Kopieren im Gast loest also keine Uebertragung aus. */
++@interface Cocoa_FileURLProvider : NSObject<NSPasteboardItemDataProvider>
++{
++    SDL_ClipboardDataCallback m_callback;
++    void *m_userdata;
++    NSUInteger m_index;
++}
++@end
++
++@implementation Cocoa_FileURLProvider
++
++- (nullable instancetype)initWith:(SDL_ClipboardDataCallback)callback
++                         userData:(void *)userdata
++                            index:(NSUInteger)index
++{
++    self = [super init];
++    if (!self) {
++        return self;
++    }
++    m_callback = callback;
++    m_userdata = userdata;
++    m_index = index;
++    return self;
++}
++
++- (void)pasteboard:(NSPasteboard *)pasteboard
++              item:(NSPasteboardItem *)item
++provideDataForType:(NSPasteboardType)type
++{
++    @autoreleasepool {
++        size_t size = 0;
++        const void *raw = m_callback(m_userdata, FILES_READY_MIME_TYPE, &size);
++        if (raw == NULL || size == 0) {
++            return;
++        }
++
++        NSString *list = [[NSString alloc] initWithBytes:raw
++                                                  length:size
++                                                encoding:NSUTF8StringEncoding];
++        if (list == nil) {
++            return;
++        }
++
++        NSMutableArray<NSString *> *urls = [NSMutableArray new];
++        for (NSString *line in [list componentsSeparatedByString:@"\n"]) {
++            NSString *trimmed = [line stringByTrimmingCharactersInSet:
++                                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
++            /* Kommentarzeilen sind im uri-list-Format zulaessig. */
++            if ([trimmed length] > 0 && ![trimmed hasPrefix:@"#"]) {
++                [urls addObject:trimmed];
++            }
++        }
++
++        if (m_index >= [urls count]) {
++            return;
++        }
++        [item setString:urls[m_index] forType:type];
++    }
++}
++
++@end
++
++/* RemoteDesk: Wie viele Dateien liegen an? Der Aufruf mit "text/uri-list"
++ * besorgt nur die Namensliste, nicht die Inhalte. */
++static NSUInteger CountAdvertisedFiles(SDL_ClipboardDataCallback callback, void *userdata)
++{
++    size_t size = 0;
++    const void *raw = callback(userdata, URI_LIST_MIME_TYPE, &size);
++    if (raw == NULL || size == 0) {
++        return 0;
++    }
++
++    NSString *list = [[NSString alloc] initWithBytes:raw length:size encoding:NSUTF8StringEncoding];
++    if (list == nil) {
++        return 0;
++    }
++
++    NSUInteger count = 0;
++    for (NSString *line in [list componentsSeparatedByString:@"\n"]) {
++        NSString *trimmed =
++            [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
++        if ([trimmed length] > 0 && ![trimmed hasPrefix:@"#"]) {
++            count++;
++        }
++    }
++    return count;
++}
++
+ bool Cocoa_SetClipboardData(SDL_VideoDevice *_this)
+ {
+     @autoreleasepool {
+@@ -176,7 +323,11 @@ bool Cocoa_SetClipboardData(SDL_VideoDevice *_this)
+         BOOL writeResult = FALSE;
+ 
+         if (_this->clipboard_callback) {
++            BOOL offersFiles = FALSE;
+             for (int i = 0; i < _this->num_clipboard_mime_types; i++) {
++                if (SDL_strcmp(_this->clipboard_mime_types[i], URI_LIST_MIME_TYPE) == 0) {
++                    offersFiles = TRUE;
++                }
+                 CFStringRef mimeType = CFStringCreateWithCString(NULL, _this->clipboard_mime_types[i], kCFStringEncodingUTF8);
+                 CFStringRef utiType = UTTypeCreatePreferredIdentifierForTag(kUTTagClassMIMEType, mimeType, NULL);
+                 CFRelease(mimeType);
+@@ -189,8 +340,26 @@ bool Cocoa_SetClipboardData(SDL_VideoDevice *_this)
+                 return SDL_SetError("Unable to set clipboard item data");
+             }
+ 
++            /* RemoteDesk: Zusaetzlich je Datei ein Element mit public.file-url,
++             * sonst bietet der Finder kein "Einfuegen" an. */
++            NSMutableArray<NSPasteboardItem *> *items = [NSMutableArray arrayWithObject:newItem];
++            if (offersFiles) {
++                NSUInteger nfiles =
++                    CountAdvertisedFiles(_this->clipboard_callback, _this->clipboard_userdata);
++                for (NSUInteger i = 0; i < nfiles; i++) {
++                    NSPasteboardItem *fileItem = [NSPasteboardItem new];
++                    Cocoa_FileURLProvider *fileProvider =
++                        [[Cocoa_FileURLProvider alloc] initWith:_this->clipboard_callback
++                                                       userData:_this->clipboard_userdata
++                                                          index:i];
++                    if ([fileItem setDataProvider:fileProvider forTypes:@[ FILE_URL_UTI ]]) {
++                        [items addObject:fileItem];
++                    }
++                }
++            }
++
+             [pasteboard clearContents];
+-            writeResult = [pasteboard writeObjects: @[newItem]];
++            writeResult = [pasteboard writeObjects: items];
+             if (writeResult == FALSE) {
+                 return SDL_SetError("Unable to set clipboard data");
+             }
+@@ -235,6 +404,36 @@ void *Cocoa_GetClipboardData(SDL_VideoDevice *_this, const char *mime_type, size
+         NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+         void *data = NULL;
+         *size = 0;
++
++        /* RemoteDesk: "text/uri-list" aus allen Datei-URLs zusammensetzen.
++         * Die Schleife weiter unten liefert nur den ersten Eintrag; bei einer
++         * Mehrfachauswahl gingen alle weiteren Dateien verloren. */
++        if (SDL_strcmp(mime_type, URI_LIST_MIME_TYPE) == 0) {
++            NSMutableString *uriList = [NSMutableString string];
++            for (NSPasteboardItem *item in [pasteboard pasteboardItems]) {
++                NSData *urlData = [item dataForType:FILE_URL_UTI];
++                if (urlData != nil) {
++                    NSString *url = [[NSString alloc] initWithData:urlData
++                                                          encoding:NSUTF8StringEncoding];
++                    if (url != nil && [url length] > 0) {
++                        [uriList appendString:ResolveFileURL(url)];
++                        [uriList appendString:@"\r\n"];
++                    }
++                }
++            }
++            if ([uriList length] > 0) {
++                const char *utf8 = [uriList UTF8String];
++                size_t length = SDL_strlen(utf8);
++                data = SDL_malloc(length + sizeof(Uint32));
++                if (data) {
++                    SDL_memcpy(data, utf8, length);
++                    SDL_memset((Uint8 *)data + length, 0, sizeof(Uint32));
++                    *size = length;
++                }
++                return data;
++            }
++        }
++
+         for (NSPasteboardItem *item in [pasteboard pasteboardItems]) {
+             NSData *itemData;
+             CFStringRef utiType = GetUTIType(mime_type);
+@@ -260,6 +459,11 @@ bool Cocoa_HasClipboardData(SDL_VideoDevice *_this, const char *mime_type)
+     bool result = false;
+     @autoreleasepool {
+         NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
++
++        if (SDL_strcmp(mime_type, URI_LIST_MIME_TYPE) == 0) {
++            return PasteboardHasFileURLs() ? true : false;
++        }
++
+         CFStringRef utiType = GetUTIType(mime_type);
+         if ([pasteboard canReadItemWithDataConformingToTypes: @[(__bridge NSString *)utiType]]) {
+             result = true;
+diff --git a/src/video/cocoa/SDL_cocoaevents.m b/src/video/cocoa/SDL_cocoaevents.m
+index fd178b8..2525800 100644
+--- a/src/video/cocoa/SDL_cocoaevents.m
++++ b/src/video/cocoa/SDL_cocoaevents.m
+@@ -414,7 +414,23 @@ static bool LoadMainMenuNibIfAvailable(void)
+         mainNibFileName = [infoDict valueForKey:@"NSMainNibFile"];
+ 
+         if (mainNibFileName) {
+-            success = [[NSBundle mainBundle] loadNibNamed:mainNibFileName owner:[NSApplication sharedApplication] topLevelObjects:nil];
++            NSArray *topLevel = nil;
++            success = [[NSBundle mainBundle] loadNibNamed:mainNibFileName owner:[NSApplication sharedApplication] topLevelObjects:&topLevel];
++
++            /* Nur das Menue aus dem Nib wird gebraucht.  Enthaelt das Nib
++             * zusaetzlich ein Fenster, so zeigt Cocoa es beim Laden an
++             * ("Visible At Launch") -- es steht dann leer neben den Fenstern,
++             * die SDL selbst anlegt.  SDL verwaltet seine Fenster
++             * ausschliesslich ueber SDL_CreateWindow, ein Fenster aus dem Nib
++             * kann daher nie ein SDL-Fenster sein und wird ausgeblendet.
++             */
++            if (success) {
++                for (id object in topLevel) {
++                    if ([object isKindOfClass:[NSWindow class]]) {
++                        [(NSWindow *)object orderOut:nil];
++                    }
++                }
++            }
+         }
+     }
+ 
+@@ -640,6 +656,21 @@ void Cocoa_PumpEvents(SDL_VideoDevice *_this)
+ {
+     @autoreleasepool {
+         Cocoa_PumpEventsUntilDate(_this, [NSDate distantPast], true);
++
++        /* macOS kennt kein Ereignis für Änderungen der Zwischenablage.  SDL
++           gleicht sie sonst ausschliesslich in windowDidBecomeKey ab, weshalb
++           in anderen Programmen kopierte Inhalte nie gemeldet werden, solange
++           das Fenster den Tastaturfokus behält.  Ein gedrosselter Abgleich
++           kostet nur einen changeCount-Vergleich und behebt das.  SDL hält
++           immer höchstens ein Video-Device, daher genügt ein statischer
++           Zeitstempel. */
++        static Uint64 clipboard_checked_at = 0;
++        const Uint64 now = SDL_GetTicks();
++
++        if (now - clipboard_checked_at >= 250) {
++            clipboard_checked_at = now;
++            Cocoa_CheckClipboardUpdate((__bridge SDL_CocoaVideoData *)_this->internal);
++        }
+     }
+ }
+ 
+diff --git a/src/video/cocoa/SDL_cocoawindow.m b/src/video/cocoa/SDL_cocoawindow.m
+index 18c79a2..954257a 100644
+--- a/src/video/cocoa/SDL_cocoawindow.m
++++ b/src/video/cocoa/SDL_cocoawindow.m
+@@ -3370,4 +3370,99 @@ bool Cocoa_SyncWindow(SDL_VideoDevice *_this, SDL_Window *window)
+     return result;
+ }
+ 
++/* RemoteDeskRDP: Ziehen aus der Sitzung auf den Mac.
++ *
++ * SDL kann Ablegen nur empfangen (performDragOperation weiter oben), aber
++ * keinen Ziehvorgang starten -- dafuer gibt es keine oeffentliche API. RDP
++ * wiederum meldet dem Client nicht, dass im Gast gezogen wird. Der Client
++ * holt die Dateien deshalb ueber die Zwischenablage ab und uebergibt die
++ * fertigen Pfade hier, damit macOS ab dort einen echten Ziehvorgang fuehrt.
++ */
++
++@interface RemoteDeskDragSource : NSObject <NSDraggingSource>
++@end
++
++@implementation RemoteDeskDragSource
++- (NSDragOperation)draggingSession:(NSDraggingSession *)session
++    sourceOperationMaskForDraggingContext:(NSDraggingContext)context
++{
++    /* Kopieren, nicht Verschieben: die Dateien liegen in einem temporaeren
++     * Ordner des Clients, ein Verschieben wuerde sie dort herausreissen. */
++    return NSDragOperationCopy;
++}
++@end
++
++/* Der Ziehvorgang haelt die Quelle nur schwach; ohne diese Referenz wird sie
++ * sofort freigegeben und macOS bricht ab. */
++static RemoteDeskDragSource *s_remotedesk_drag_source = nil;
++
++__attribute__((visibility("default"))) bool RemoteDesk_StartFileDrag(SDL_Window *window,
++                                                                    const char *const *paths,
++                                                                    int count)
++{
++    if (!window || !paths || count <= 0) {
++        return false;
++    }
++
++    @autoreleasepool {
++        SDL_CocoaWindowData *data = (__bridge SDL_CocoaWindowData *)window->internal;
++        if (!data || !data.sdlContentView) {
++            return false;
++        }
++        NSView *view = data.sdlContentView;
++
++        NSMutableArray *items = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
++        for (int i = 0; i < count; i++) {
++            if (!paths[i]) {
++                continue;
++            }
++            NSString *path = [NSString stringWithUTF8String:paths[i]];
++            if (!path) {
++                continue;
++            }
++            NSURL *url = [NSURL fileURLWithPath:path];
++            if (!url) {
++                continue;
++            }
++            NSDraggingItem *item = [[NSDraggingItem alloc] initWithPasteboardWriter:url];
++            /* Ohne Bild zeigt macOS nichts an; das Symbol des Finders passt. */
++            NSImage *icon = [[NSWorkspace sharedWorkspace] iconForFile:path];
++            NSRect frame = NSMakeRect(0.0, 0.0, 48.0, 48.0);
++            [item setDraggingFrame:frame contents:icon];
++            [items addObject:item];
++        }
++        if ([items count] == 0) {
++            return false;
++        }
++
++        /* Das zuletzt verarbeitete Ereignis taugt nicht: zwischen dem
++         * Herausziehen und dem Ende des Downloads koennen Sekunden liegen.
++         * Deshalb ein frisches Ereignis an der aktuellen Zeigerposition. */
++        NSPoint screen = [NSEvent mouseLocation];
++        NSRect screenRect = NSMakeRect(screen.x, screen.y, 0.0, 0.0);
++        NSPoint inWindow = [[view window] convertRectFromScreen:screenRect].origin;
++        NSEvent *ev = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged
++                                         location:inWindow
++                                    modifierFlags:0
++                                        timestamp:[[NSProcessInfo processInfo] systemUptime]
++                                     windowNumber:[[view window] windowNumber]
++                                          context:nil
++                                      eventNumber:0
++                                       clickCount:1
++                                         pressure:1.0];
++        if (!ev) {
++            return false;
++        }
++
++        if (!s_remotedesk_drag_source) {
++            s_remotedesk_drag_source = [[RemoteDeskDragSource alloc] init];
++        }
++
++        NSDraggingSession *session = [view beginDraggingSessionWithItems:items
++                                                                   event:ev
++                                                                  source:s_remotedesk_drag_source];
++        return session != nil;
++    }
++}
++
+ #endif // SDL_VIDEO_DRIVER_COCOA

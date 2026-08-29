@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Eigene Befehle und der Ordnerdialog für Laufwerksfreigaben.","local":true,"windows":["main","vnc-*","ssh-*","sftp-*","mosh-*","object-*"],"permissions":["core:default","core:window:allow-close","core:window:allow-set-focus","core:webview:allow-create-webview-window","dialog:allow-open","deep-link:default"]}}

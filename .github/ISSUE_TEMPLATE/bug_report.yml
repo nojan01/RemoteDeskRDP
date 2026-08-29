@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible problem in RemoteDeskRDP
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a problem. Remove passwords, tokens and private host names from logs.
+  - type: input
+    id: version
+    attributes:
+      label: RemoteDeskRDP version
+      placeholder: 0.6.3
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+      placeholder: macOS 26.x, MacBook Pro M4
+    validations:
+      required: true
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: Protocol or feature
+      options:
+        - RDP
+        - VNC
+        - SSH
+        - SFTP
+        - Mosh
+        - S3 / Swift
+        - Application UI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Describe the smallest reliable sequence that triggers the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and redacted logs
+    validations:
+      required: true
+
