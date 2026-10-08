@@ -35,3 +35,8 @@ export const forgetGatewayPassword = (profileId: string) =>
   invoke<void>("forget_gateway_password", { profileId });
 export const takePendingLink = () => invoke<string | null>("take_pending_link");
 export const minimizeWindow = () => invoke<void>("minimize_window");
+export const appVersion = () => invoke<string>("app_version");
+export const setUpdateMenuLabel = (label: string) =>
+  invoke<void>("set_update_menu_label", { label });
+export const activeSessionCount = () => invoke<number>("active_session_count");
+export const restartApplication = () => invoke<void>("restart_application");

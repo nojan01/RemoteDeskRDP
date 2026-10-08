@@ -1874,15 +1874,115 @@ fn remember_link(handle: &tauri::AppHandle, url: &tauri::Url) {
     }
 }
 
+/// Menüeintrag "Nach Updates suchen …". Gemerkt, damit die Oberfläche ihn in
+/// der gewählten Sprache beschriften kann – das Backend kennt die Sprache nicht.
+#[derive(Default)]
+struct UpdateMenuItem(Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>);
+
+const CHECK_UPDATES_MENU_ID: &str = "check-updates";
+
+#[tauri::command]
+fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+#[tauri::command]
+fn set_update_menu_label(app: tauri::AppHandle, label: String) {
+    use tauri::Manager;
+    let label = label.trim();
+    // Eine unbrauchbare Beschriftung lässt die bisherige einfach stehen.
+    if label.is_empty() || label.chars().count() > 80 {
+        return;
+    }
+    let state = app.state::<UpdateMenuItem>();
+    let item = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    if let Some(item) = item {
+        let _ = item.set_text(label);
+    }
+}
+
+/// Laufende Sitzungen, die ein Neustart beenden würde: RDP-, VNC- und
+/// Terminal-Sitzungen.
+#[tauri::command]
+fn active_session_count(app: tauri::AppHandle) -> usize {
+    use tauri::Manager;
+    let remote = app
+        .state::<Sessions>()
+        .0
+        .lock()
+        .map(|running| running.len())
+        .unwrap_or(0);
+    remote + app.state::<SshSessions>().lock().len()
+}
+
+/// Beendet alle Sitzungen und startet die App neu, damit ein installiertes
+/// Update greift. `restart()` löst kein `RunEvent::Exit` aus; aufgeräumt wird
+/// deshalb hier.
+#[tauri::command]
+fn restart_application(app: tauri::AppHandle) {
+    use tauri::Manager;
+    let ssh: Vec<SshSession> = app
+        .state::<SshSessions>()
+        .lock()
+        .drain()
+        .filter_map(|(_, session)| session)
+        .collect();
+    for mut session in ssh {
+        let _ = session.killer.kill();
+    }
+    // FreeRDP läuft als eigener Prozess und überlebte den Neustart. Er stammt
+    // aber aus dem gerade ersetzten Bundle; deshalb wird er ebenfalls beendet.
+    let pids: Vec<u32> = app
+        .state::<Sessions>()
+        .0
+        .lock()
+        .map(|mut running| running.drain().map(|(_, pid)| pid).filter(|&pid| pid > 0).collect())
+        .unwrap_or_default();
+    for pid in pids {
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    app.restart();
+}
+
+/// Ergänzt das Standardmenü um "Nach Updates suchen …" direkt unter "Über".
+#[cfg(target_os = "macos")]
+fn install_update_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::{Emitter, Manager};
+    let menu = Menu::default(app.handle())?;
+    let item = MenuItem::with_id(app, CHECK_UPDATES_MENU_ID, "Check for Updates…", true, None::<&str>)?;
+    if let Some(app_menu) = menu.items()?.first().and_then(|entry| entry.as_submenu().cloned()) {
+        app_menu.insert(&item, 1)?;
+    }
+    app.set_menu(menu)?;
+    *app.state::<UpdateMenuItem>().0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(item);
+    app.on_menu_event(|app, event| {
+        if event.id() == CHECK_UPDATES_MENU_ID {
+            restore_main_window(app);
+            let _ = app.emit_to("main", "remotedesk://check-updates", ());
+        }
+    });
+    Ok(())
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PendingLink::default())
         .manage(Sessions::default())
         .manage(SshSessions(Mutex::new(HashMap::new())))
         .manage(ProfileStore::default())
+        .manage(UpdateMenuItem::default())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            install_update_menu(app)?;
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
@@ -1903,7 +2003,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window])
+        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, active_session_count, restart_application])
         .build(tauri::generate_context!())
         .expect("Fehler beim Start von RemoteDeskRDP");
     app.run(|app, event| {

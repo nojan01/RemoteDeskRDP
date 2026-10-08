@@ -33,6 +33,12 @@
           "remotedesk"
         ]
       }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI3M0NBRERFRUY1MTgyMDEKUldRQmdsSHYzcTA4Si9zUnVaY0NqQzJIbFJmYm9VVG1zNmpGajhISTdQVGUzdTZrcFZFTGQxdFAK",
+      "endpoints": [
+        "https://github.com/nojan01/RemoteDeskRDP/releases/latest/download/latest.json"
+      ]
     }
   },
   "bundle": {

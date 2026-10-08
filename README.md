@@ -86,6 +86,29 @@ only scale the image. `REMOTEDESK_RDP_EXECUTABLE` wins over everything else;
 after that RemoteDeskRDP falls back to the bundled `sdl-freerdp`, the bundled
 `MacFreeRDP`, a Homebrew `sdl-freerdp` and finally to `xfreerdp` with XQuartz.
 
+## Updates
+
+RemoteDeskRDP checks GitHub for a new release three seconds after start and
+offers to install it; **RemoteDeskRDP → Check for Updates…** runs the same check
+on demand. The update is downloaded, its signature verified against the public
+key in `src-tauri/tauri.conf.json`, the app replaced and restarted. Open
+sessions end with the restart, so RemoteDeskRDP asks first.
+
+Releasing an update:
+
+1. Keep the private updater key at `~/.tauri/remotedesk-updater.key` (or point
+   `REMOTEDESK_UPDATER_KEY` at it; a password goes into
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). Back it up – without it no installed
+   copy will accept another update. Never commit it.
+2. Add a `## X.Y.Z – date` section to `CHANGELOG.md`; it becomes the release
+   notes.
+3. Run `npm run tauri:build` and `scripts/notarize.sh`. Step 6 packs the
+   notarized, stapled app as `RemoteDeskRDP.app.tar.gz`, signs it and writes
+   `latest.json` to `src-tauri/target/release/bundle/updater/`.
+4. Upload these three files together with the DMG to the GitHub release
+   `vX.Y.Z` and publish it. Installed copies find it through
+   `releases/latest/download/latest.json`.
+
 ## Window size and resolution
 
 Every profile stores how its session window behaves:

@@ -24,6 +24,12 @@
 #
 # Ablauf:  tauri build  ->  dieses Skript  ->  App nach /Applications
 #
+# Zum Schluss entsteht das Updater-Paket aus der *gestapelten* App:
+# RemoteDeskRDP.app.tar.gz, die Signatur .sig und latest.json. Tauris eigenes
+# Updater-Archiv taugt dafuer nicht, weil es die App vor dem Nachsiegeln
+# enthaelt. Signiert wird mit ~/.tauri/remotedesk-updater.key (abweichend:
+# REMOTEDESK_UPDATER_KEY, Kennwort: TAURI_SIGNING_PRIVATE_KEY_PASSWORD).
+#
 # Aufruf:
 #   scripts/notarize.sh [pfad-zu-RemoteDeskRDP.app]
 
@@ -50,7 +56,17 @@ fi
 
 backend="${app}/Contents/Resources/resources/freerdp/MacFreeRDP.app"
 
-echo "== 1/5  Eingebettetes FreeRDP-Bundle nachsiegeln =="
+updater_key="${REMOTEDESK_UPDATER_KEY:-${HOME}/.tauri/remotedesk-updater.key}"
+if [ ! -f "${updater_key}" ]; then
+  echo "Updater-Schluessel fehlt: ${updater_key}" >&2
+  echo "Ohne ihn laesst sich kein Update veroeffentlichen. Neu anlegen nur, wenn" >&2
+  echo "der alte unwiederbringlich verloren ist (Installationen brauchen dann" >&2
+  echo "einmalig ein manuelles Update):" >&2
+  echo "  npx tauri signer generate --ci -p \"\" -w \"${updater_key}\"" >&2
+  exit 1
+fi
+
+echo "== 1/6  Eingebettetes FreeRDP-Bundle nachsiegeln =="
 if [ -d "${backend}" ]; then
   "${script_dir}/sign-freerdp-backend.sh" "${backend}" >/dev/null
   echo "   ${backend##*/Resources/} neu gesiegelt"
@@ -60,12 +76,12 @@ fi
 
 # Ohne --deep: das wuerde die eingebetteten Bundles mit der Kennung der
 # aeusseren App ueberschreiben und das gerade erneuerte Siegel wieder zerstoeren.
-echo "== 2/5  Aeussere App neu signieren =="
+echo "== 2/6  Aeussere App neu signieren =="
 codesign --force --options runtime --timestamp --sign "${identity}" "${app}"
 codesign --verify --deep --strict "${app}"
 codesign --verify --deep --strict "${backend}"
 
-echo "== 3/5  Einreichen =="
+echo "== 3/6  Einreichen =="
 archive="$(mktemp -d)/$(basename "${app}" .app).zip"
 /usr/bin/ditto -c -k --keepParent "${app}" "${archive}"
 
@@ -94,15 +110,50 @@ PY
   exit 1
 fi
 
-echo "== 4/5  Ticket anheften =="
+echo "== 4/6  Ticket anheften =="
 xcrun stapler staple "${app}"
 
-echo "== 5/5  Nachweis =="
+echo "== 5/6  Nachweis =="
 # "accepted / source=Notarized Developer ID" ist der einzige Beleg, der zaehlt.
 spctl -a -vvv -t exec "${app}"
 xcrun stapler validate "${app}"
 
 rm -rf "$(dirname "${archive}")" "${submit_log}"
+
+echo "== 6/6  Updater-Paket =="
+plist="${app}/Contents/Info.plist"
+version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${plist}")"
+executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${plist}")"
+platforms=""
+for arch in $(lipo -archs "${app}/Contents/MacOS/${executable}"); do
+  case "${arch}" in
+    arm64)  platforms="${platforms:+${platforms},}darwin-aarch64" ;;
+    x86_64) platforms="${platforms:+${platforms},}darwin-x86_64" ;;
+  esac
+done
+if [ -z "${platforms}" ]; then
+  echo "Architektur der App nicht erkannt." >&2
+  exit 1
+fi
+
+release_dir="$(dirname "${app}")/../updater"
+mkdir -p "${release_dir}"
+release_dir="$(cd "${release_dir}" && pwd)"
+tarball="${release_dir}/$(basename "${app}").tar.gz"
+rm -f "${tarball}" "${tarball}.sig" "${release_dir}/latest.json"
+# Ohne COPYFILE_DISABLE packt tar AppleDouble-Dateien (._*) mit hinein; die
+# entpackte App bestuende dann die Siegelpruefung nicht mehr.
+COPYFILE_DISABLE=1 tar -czf "${tarball}" -C "$(dirname "${app}")" "$(basename "${app}")"
+(cd "${script_dir}/.." && npx --no-install tauri signer sign \
+  -f "${updater_key}" -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "${tarball}" >/dev/null)
+(cd "${script_dir}/.." && node scripts/create-updater-manifest.mjs \
+  "${version}" "${platforms}" "${tarball}" "${release_dir}/latest.json")
+
 echo
 echo "Fertig. Installieren mit:"
 echo "  rm -rf /Applications/$(basename "${app}") && ditto \"${app}\" \"/Applications/$(basename "${app}")\""
+echo
+echo "Fuer das GitHub-Release v${version} hochladen:"
+echo "  ${tarball}"
+echo "  ${tarball}.sig"
+echo "  ${release_dir}/latest.json"

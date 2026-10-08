@@ -27,6 +27,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "time"] }
 tokio-tungstenite = "0.28"
 portable-pty = "^0.9.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tauri-plugin-updater = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"

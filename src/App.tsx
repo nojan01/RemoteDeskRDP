@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import RFB from "@novnc/novnc";
-import { closeTerminalSession, connectProfile, deleteProfile, forgetGatewayPassword, forgetPassword, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, saveGatewayPassword, savePassword, saveProfile, startVncSession, takePendingLink } from "./api";
+import { closeTerminalSession, connectProfile, deleteProfile, forgetGatewayPassword, forgetPassword, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, saveGatewayPassword, savePassword, saveProfile, setUpdateMenuLabel, startVncSession, takePendingLink } from "./api";
+import { checkForUpdates, type UpdateReporter } from "./updater";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -14,7 +15,7 @@ type Field = keyof RemoteProfile;
 /** Die Zustandszeile hält einen Schlüssel statt fertigem Text. Nur so wechselt
  *  auch eine stehende Meldung mit, wenn der Nutzer die Sprache umschaltet.
  *  `error` bleibt roh und wird erst beim Zeichnen übersetzt. */
-type Status = { key: string; name?: string; error?: unknown };
+type Status = { key: string; name?: string; error?: unknown; params?: Record<string, string | number> };
 
 /** Reihenfolge der Hilfeabschnitte; die Texte stehen in den Wörterbüchern. */
 const helpSections = [
@@ -102,6 +103,7 @@ export function App() {
   const statusText = () => {
     const s = status();
     return t(s.key, {
+      ...s.params,
       name: s.name ?? "",
       error: s.error === undefined ? "" : errMsg(s.error),
     });
@@ -228,6 +230,11 @@ export function App() {
     } catch (error) { setStatus({ key: "state.connectFailed", error }); return null; }
   };
 
+  // Die Menübeschriftung folgt der Sprache; das Menü gehört dem Hauptfenster.
+  if (!isTerminalWindow && !isVncWindow) {
+    createEffect(() => void setUpdateMenuLabel(t("menu.checkUpdates")).catch(() => {}));
+  }
+
   onMount(async () => {
     try {
       const loaded = await listProfiles();
@@ -276,6 +283,12 @@ export function App() {
     };
     await listen("deep-link-connect", () => void drainLink());
     await drainLink();
+
+    // Nur das Hauptfenster kümmert sich um Updates; Terminal- und VNC-Fenster
+    // sind oben bereits ausgestiegen.
+    const reportUpdate: UpdateReporter = (key, params) => setStatus(key ? { key, params } : { key: "state.ready" });
+    await listen("remotedesk://check-updates", () => void checkForUpdates(true, reportUpdate));
+    setTimeout(() => void checkForUpdates(false, reportUpdate), 3000);
   });
 
   const update = <K extends Field>(field: K, value: RemoteProfile[K]) => {
