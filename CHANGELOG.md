@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.0 – 2026-10-08
 
 - Add an in-app updater: RemoteDeskRDP checks for new releases at start and via
   **RemoteDeskRDP → Check for Updates…**, verifies the signed update and
