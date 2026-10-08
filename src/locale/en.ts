@@ -280,7 +280,7 @@ export const en: Record<string, string> = {
 
   "license.freerdp.h": "Modified files in FreeRDP and SDL",
   "license.freerdp.body":
-    "<p>The Apache-2.0 licence requires modified files to be marked as such. RemoteDeskRDP modifies <b>13 files</b> in FreeRDP 3.26.0 and <b>3 files</b> in SDL 3.2.28:</p>" +
+    "<p>The Apache-2.0 licence requires modified files to be marked as such. RemoteDeskRDP modifies <b>14 files</b> in FreeRDP 3.26.0 and <b>3 files</b> in SDL 3.2.28:</p>" +
     "<p><b>FreeRDP 3.26.0</b></p>" +
     "<ul><li><code>scripts/bundle-mac-os.sh</code> – also builds the Cocoa client.</li>" +
     "<li><code>client/Mac/Keyboard.m</code> – fixes a build error that only appears when the Cocoa client is built.</li>" +
@@ -290,6 +290,7 @@ export const en: Record<string, string> = {
     "<li><code>client/SDL/SDL3/sdl_freerdp.cpp</code> – presents once per frame instead of once per packet.</li>" +
     "<li><code>client/SDL/SDL3/sdl_context.cpp</code> and <code>.hpp</code> – separates drawing from presenting; accepts dropped files and detects dragging out.</li>" +
     "<li><code>client/SDL/SDL3/sdl_window.cpp</code> – disables alpha blending on the frame textures; fixes banding at 24-bit and a black screen at 32-bit colour depth.</li>" +
+    "<li><code>client/SDL/SDL3/sdl_channels.cpp</code> – adds RemoteApp: answers the RAIL handshake and starts the requested program.</li>" +
     "<li><code>client/SDL/SDL3/sdl_clip.cpp</code> and <code>.hpp</code> – reports the clipboard after connection setup, transfers files in both directions and handles drag and drop.</li>" +
     "<li><code>client/common/client_cliprdr_file.c</code> – fetches files from the session without FUSE and fixes a percent-encoding bug in file names.</li>" +
     "<li><code>include/freerdp/client/client_cliprdr_file.h</code> – adds <code>cliprdr_file_context_wait_for_files</code>.</li></ul>" +
@@ -370,4 +371,41 @@ export const en: Record<string, string> = {
   "update.installing": "Installing update…",
   "update.done": "RemoteDeskRDP {version} has been installed and will now restart.",
   "err.update.failed": "Checking for updates failed: {error}",
+  "display.scale": "Scaling (device)",
+  "display.scaleDesktop": "Scaling (desktop)",
+  "display.scale.auto": "Server default",
+  "display.scaleNote": "On Retina displays the remote desktop otherwise looks tiny. “Desktop” enlarges text and controls in Windows, “device” tells the server the pixel density.",
+  "display.remoteAppNote": "With RemoteApp, display mode, window size and resizing do not apply – the window follows the program.",
+  "remoteApp.eyebrow": "Single program",
+  "remoteApp.title": "RemoteApp",
+  "remoteApp.program": "Program",
+  "remoteApp.programPlaceholder": "Empty = whole desktop, e.g. ||Outlook or C:\\Windows\\notepad.exe",
+  "remoteApp.programNote": "“||Name” starts an application published on the server, otherwise the path on the server.",
+  "remoteApp.cmd": "Arguments (optional)",
+  "remoteApp.name": "Display name (optional)",
+  "remoteApp.note": "The program appears in the session window, not as a separate macOS window. Commas and quotes are not allowed. The server must permit RemoteApp.",
+  "locale.eyebrow": "Region",
+  "locale.title": "Keyboard and time zone",
+  "locale.keyboard": "Keyboard layout",
+  "locale.timezone": "Time zone",
+  "locale.automatic": "Automatic",
+  "locale.note": "The layout as an ID such as 0x00000409 (US) or as a name. The time zone needs the exact Windows name, e.g. “W. Europe Standard Time”; an unknown name prevents the connection.",
+  "session.microphone": "Redirect microphone",
+  "session.admin": "Administrator/console session",
+  "help.microphone.h": "Microphone",
+  "help.microphone.body": "<p>Redirects the Mac microphone into the session, for telephony or dictation for example. The first time, macOS asks for permission; it can be revoked under System Settings → Privacy &amp; Security → Microphone.</p>",
+  "help.admin.h": "Administrator/console session",
+  "help.admin.body": "<p>Connects to the server's console session instead of opening a new session. On terminal servers it does not use an RDS licence and is meant for administration.</p>",
+  "help.scaling.h": "Scaling",
+  "help.scaling.body": "<p>“Desktop” (100–500 %) corresponds to the Windows setting “Scale and layout”. “Device” (100, 140, 180 %) reports the pixel density. Older servers ignore both.</p>",
+  "help.keyboard.h": "Keyboard and time zone",
+  "help.keyboard.body": "<p>Without a value, FreeRDP uses the Mac's layout and time zone. A specific layout helps when special characters arrive wrong. <code>sdl-freerdp /list:timezones</code> prints all time zones.</p>",
+  "help.remoteapp.h": "RemoteApp",
+  "help.remoteapp.body": "<p>Starts just one program instead of the whole desktop. The server must allow this (Windows Server with RemoteApp collections or published programs). On macOS the program appears in the session window; FreeRDP's SDL client does not yet offer separate, freely movable windows per program. For this, the bundled client contains a small addition, see Licenses.</p>",
+  "err.listValueInvalid": "Keyboard layout and RemoteApp values must not contain commas or quotes.",
+  "err.scaleInvalid": "Device scaling must be 100, 140 or 180 %.",
+  "err.scaleDesktopInvalid": "Desktop scaling must be between 100 and 500 %.",
+  "err.timezoneInvalid": "The time zone is invalid.",
+  "err.remoteAppProgramRequired": "RemoteApp arguments or a display name were given without a program.",
+  "err.remoteAppNeedsSdl": "RemoteApp needs the SDL client; the Cocoa client does not support it.",
 };

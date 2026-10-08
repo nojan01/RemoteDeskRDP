@@ -64,7 +64,8 @@
     "macOS": {
       "minimumSystemVersion": "26.0",
       "signingIdentity": "Developer ID Application: Norbert Jander (TXF2V79Z6N)",
-      "hardenedRuntime": true
+      "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist"
     }
   }
 }

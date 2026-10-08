@@ -21,7 +21,30 @@ type Status = { key: string; name?: string; error?: unknown; params?: Record<str
 /** Reihenfolge der Hilfeabschnitte; die Texte stehen in den Wörterbüchern. */
 const helpSections = [
   "targets", "ports", "vnc", "ssh", "sftp", "mosh", "gateway", "udp", "reconnect", "display", "files", "folders",
-  "limits", "printer", "smartcard", "video", "security", "appearance", "dualbeam",
+  "limits", "printer", "smartcard", "video", "microphone", "admin", "scaling", "keyboard", "remoteapp", "security", "appearance", "dualbeam",
+] as const;
+
+/** Häufige Windows-Tastaturlayouts (KLID). Freie Eingabe bleibt möglich. */
+const keyboardLayouts = [
+  { id: "0x00000407", label: "Deutsch" },
+  { id: "0x00000807", label: "Deutsch (Schweiz)" },
+  { id: "0x00000c07", label: "Deutsch (Österreich)" },
+  { id: "0x00000409", label: "English (US)" },
+  { id: "0x00000809", label: "English (UK)" },
+  { id: "0x0000040c", label: "Français" },
+  { id: "0x0000100c", label: "Français (Suisse)" },
+  { id: "0x00000410", label: "Italiano" },
+  { id: "0x0000040a", label: "Español" },
+  { id: "0x00000413", label: "Nederlands" },
+] as const;
+
+/** Auswahl aus `sdl-freerdp /list:timezones`; FreeRDP verlangt den genauen Namen. */
+const windowsTimezones = [
+  "W. Europe Standard Time", "Central Europe Standard Time", "Romance Standard Time",
+  "GMT Standard Time", "UTC", "E. Europe Standard Time", "FLE Standard Time",
+  "Russian Standard Time", "Eastern Standard Time", "Central Standard Time",
+  "Mountain Standard Time", "Pacific Standard Time", "Tokyo Standard Time",
+  "China Standard Time", "India Standard Time", "AUS Eastern Standard Time",
 ] as const;
 
 /** Reihenfolge der Lizenzabschnitte; die Texte stehen in den Wörterbüchern. */
@@ -52,6 +75,9 @@ function linkFingerprint(profile: RemoteProfile) {
     profile.id, profile.protocol, profile.host, profile.username,
     profile.rdpTcpPort, profile.vncPort, profile.sshPort,
     profile.gatewayEnabled, profile.gatewayHost, profile.gatewayPort,
+    // Ein Link darf nicht unbemerkt ein anderes Programm oder die
+    // Administratorsitzung starten.
+    profile.remoteAppProgram, profile.remoteAppCmd, profile.adminSession,
   ]);
 }
 function readTrustedLinks(): string[] {
@@ -475,12 +501,45 @@ export function App() {
             <option value="15">{t("display.depth.15")}</option>
             <option value="8">{t("display.depth.8")}</option>
           </select></label>
+          <div class="port-row">
+            <label class="select-label"><span>{t("display.scale")}</span><select value={String(current().scale)} onChange={(event) => update("scale", Number(event.currentTarget.value))}>
+              <option value="0">{t("display.scale.auto")}</option>
+              <option value="100">100 %</option>
+              <option value="140">140 %</option>
+              <option value="180">180 %</option>
+            </select></label>
+            <label class="select-label"><span>{t("display.scaleDesktop")}</span><select value={String(current().scaleDesktop)} onChange={(event) => update("scaleDesktop", Number(event.currentTarget.value))}>
+              <option value="0">{t("display.scale.auto")}</option>
+              <For each={[100, 125, 150, 175, 200, 250, 300]}>{(value) => <option value={String(value)}>{value} %</option>}</For>
+            </select></label>
+          </div>
           <p>{t("display.depthNote")}</p>
           <p>{t("display.resizeNote")}</p>
+          <p>{t("display.scaleNote")}</p>
+          <Show when={current().remoteAppProgram.trim()}><p>{t("display.remoteAppNote")}</p></Show>
+        </section></Show>
+
+        <Show when={current().protocol === "rdp"}><section class="section-card"><div class="section-head"><div><span class="eyebrow">{t("remoteApp.eyebrow")}</span><h2>{t("remoteApp.title")}</h2></div></div>
+          <div class="field-grid">
+            <label class="wide"><span>{t("remoteApp.program")}</span><input value={current().remoteAppProgram} onInput={(event) => update("remoteAppProgram", event.currentTarget.value)} placeholder={t("remoteApp.programPlaceholder")} /><small>{t("remoteApp.programNote")}</small></label>
+            <label class="wide"><span>{t("remoteApp.cmd")}</span><input value={current().remoteAppCmd} onInput={(event) => update("remoteAppCmd", event.currentTarget.value)} /></label>
+            <label class="wide"><span>{t("remoteApp.name")}</span><input value={current().remoteAppName} onInput={(event) => update("remoteAppName", event.currentTarget.value)} /></label>
+          </div>
+          <p>{t("remoteApp.note")}</p>
+        </section></Show>
+
+        <Show when={current().protocol === "rdp"}><section class="section-card"><div class="section-head"><div><span class="eyebrow">{t("locale.eyebrow")}</span><h2>{t("locale.title")}</h2></div></div>
+          <div class="field-grid">
+            <label><span>{t("locale.keyboard")}</span><input list="keyboard-layouts" value={current().keyboardLayout} onInput={(event) => update("keyboardLayout", event.currentTarget.value)} placeholder={t("locale.automatic")} /></label>
+            <label><span>{t("locale.timezone")}</span><input list="windows-timezones" value={current().timezone} onInput={(event) => update("timezone", event.currentTarget.value)} placeholder={t("locale.automatic")} /></label>
+          </div>
+          <datalist id="keyboard-layouts"><For each={keyboardLayouts}>{(layout) => <option value={layout.id}>{layout.label}</option>}</For></datalist>
+          <datalist id="windows-timezones"><For each={windowsTimezones}>{(zone) => <option value={zone} />}</For></datalist>
+          <p>{t("locale.note")}</p>
         </section></Show>
 
         <Show when={current().protocol === "rdp"}><section class="section-card"><div class="section-head"><div><span class="eyebrow">{t("session.eyebrow")}</span><h2>{t("session.title")}</h2></div><span class="keychain">{t("session.keychain")}</span></div>
-          <div class="toggle-grid"><Toggle label={t("session.clipboard")} checked={current().clipboard} onChange={(value) => update("clipboard", value)} /><Toggle label={t("session.audio")} checked={current().audio} onChange={(value) => update("audio", value)} /><Toggle label={t("session.printer")} checked={current().printer} onChange={(value) => update("printer", value)} /><Toggle label={t("session.smartcard")} checked={current().smartcard} onChange={(value) => update("smartcard", value)} /><Toggle label={t("session.video")} checked={current().video} onChange={(value) => update("video", value)} /></div>
+          <div class="toggle-grid"><Toggle label={t("session.clipboard")} checked={current().clipboard} onChange={(value) => update("clipboard", value)} /><Toggle label={t("session.audio")} checked={current().audio} onChange={(value) => update("audio", value)} /><Toggle label={t("session.printer")} checked={current().printer} onChange={(value) => update("printer", value)} /><Toggle label={t("session.smartcard")} checked={current().smartcard} onChange={(value) => update("smartcard", value)} /><Toggle label={t("session.video")} checked={current().video} onChange={(value) => update("video", value)} /><Toggle label={t("session.microphone")} checked={current().microphone} onChange={(value) => update("microphone", value)} /><Toggle label={t("session.admin")} checked={current().adminSession} onChange={(value) => update("adminSession", value)} /></div>
           <div class="shares">
             <div class="shares-head"><span>{t("session.shares")}</span><button class="secondary small" onClick={addFolder}>{t("session.addFolder")}</button></div>
             <Show when={current().sharedFolders.length > 0} fallback={<p class="shares-empty">{t("session.noShares")}</p>}>

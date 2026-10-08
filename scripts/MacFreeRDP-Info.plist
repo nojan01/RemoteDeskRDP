@@ -31,6 +31,8 @@
   <string>12.0</string>
   <key>NSMainNibFile</key>
   <string>MainMenu</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>RemoteDeskRDP leitet das Mikrofon in die RDP-Sitzung um, wenn das im Profil eingeschaltet ist.</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
 </dict>

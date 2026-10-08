@@ -146,6 +146,33 @@ struct RemoteProfile {
     gateway_username: String,
     #[serde(default)]
     gateway_domain: String,
+    /// Mikrofon in die Sitzung umleiten (Kanal audin).
+    #[serde(default)]
+    microphone: bool,
+    /// Skalierung der Gegenstelle in Prozent. 0 überlässt sie dem Server.
+    /// FreeRDP nimmt für `/scale:` nur 100, 140 und 180 an.
+    #[serde(default)]
+    scale: u16,
+    /// Skalierung des entfernten Desktops in Prozent (100–500), 0 = Vorgabe.
+    #[serde(default)]
+    scale_desktop: u16,
+    /// Verbindet zur Konsolen- bzw. Administratorsitzung (`+admin`).
+    #[serde(default)]
+    admin_session: bool,
+    /// Tastaturlayout als Hex-Kennung (z. B. 0x00000407) oder Name.
+    #[serde(default)]
+    keyboard_layout: String,
+    /// Windows-Zeitzonenname, z. B. "W. Europe Standard Time".
+    #[serde(default)]
+    timezone: String,
+    /// RemoteApp: nur dieses Programm statt des ganzen Desktops starten.
+    /// `||Alias` steht für eine auf dem Server veröffentlichte Anwendung.
+    #[serde(default)]
+    remote_app_program: String,
+    #[serde(default)]
+    remote_app_cmd: String,
+    #[serde(default)]
+    remote_app_name: String,
     certificate_mode: CertificateMode,
     updated_at: String,
 }
@@ -422,6 +449,44 @@ fn validate_profile(profile: &RemoteProfile) -> Result<(), String> {
         }
         ensure_single_line(&profile.gateway_username)?;
         ensure_single_line(&profile.gateway_domain)?;
+    }
+    if profile.protocol == Protocol::Rdp {
+        validate_rdp_extras(profile)?;
+    }
+    Ok(())
+}
+
+/// Werte, die FreeRDP als Teil einer kommagetrennten Liste liest
+/// (`/kbd:`, `/app:`). Ein Komma würde die Liste zerreissen, Anführungszeichen
+/// brechen die Zerlegung ab (siehe `gateway_value`). Maskieren wäre möglich,
+/// aber in Programmpfaden und Layoutnamen kommen beide Zeichen praktisch nie vor.
+fn ensure_list_value(value: &str) -> Result<(), String> {
+    ensure_single_line(value)?;
+    if value.contains(',') || value.contains('"') || value.contains('\'') {
+        return Err("err.listValueInvalid".into());
+    }
+    Ok(())
+}
+
+fn validate_rdp_extras(profile: &RemoteProfile) -> Result<(), String> {
+    if !matches!(profile.scale, 0 | 100 | 140 | 180) {
+        return Err("err.scaleInvalid".into());
+    }
+    if profile.scale_desktop != 0 && !(100..=500).contains(&profile.scale_desktop) {
+        return Err("err.scaleDesktopInvalid".into());
+    }
+    ensure_list_value(profile.keyboard_layout.trim())?;
+    let timezone = profile.timezone.trim();
+    ensure_single_line(timezone)?;
+    if timezone.len() > 128 || timezone.starts_with('-') {
+        return Err("err.timezoneInvalid".into());
+    }
+    let program = profile.remote_app_program.trim();
+    ensure_list_value(program)?;
+    ensure_list_value(profile.remote_app_cmd.trim())?;
+    ensure_list_value(profile.remote_app_name.trim())?;
+    if program.is_empty() && (!profile.remote_app_cmd.trim().is_empty() || !profile.remote_app_name.trim().is_empty()) {
+        return Err("err.remoteAppProgramRequired".into());
     }
     Ok(())
 }
@@ -732,6 +797,23 @@ fn display_arguments(profile: &RemoteProfile, backend: Backend) -> Vec<String> {
     arguments
 }
 
+fn is_remote_app(profile: &RemoteProfile) -> bool {
+    !profile.remote_app_program.trim().is_empty()
+}
+
+/// `/app:program:<p>[,cmd:<c>][,name:<n>]` – die Werte sind in
+/// `validate_rdp_extras` frei von Kommas und Anführungszeichen.
+fn remote_app_argument(profile: &RemoteProfile) -> String {
+    let mut argument = format!("/app:program:{}", profile.remote_app_program.trim());
+    if !profile.remote_app_cmd.trim().is_empty() {
+        argument.push_str(&format!(",cmd:{}", profile.remote_app_cmd.trim()));
+    }
+    if !profile.remote_app_name.trim().is_empty() {
+        argument.push_str(&format!(",name:{}", profile.remote_app_name.trim()));
+    }
+    argument
+}
+
 /// Der Titel des Sitzungsfensters.
 ///
 /// Ohne `/t:` setzt der SDL-Client "FreeRDP: <Host>" (sdl_context.cpp, Z. 499).
@@ -778,12 +860,39 @@ fn rdp_arguments(profile: &RemoteProfile, backend: Backend) -> Result<Vec<String
         CertificateMode::Tofu => arguments.push("/cert:tofu".into()),
         CertificateMode::Ignore => arguments.push("/cert:ignore".into()),
     };
-    arguments.extend(display_arguments(profile, backend));
+    if is_remote_app(profile) {
+        // Ein RemoteApp-Fenster folgt dem Programm auf dem Server. Vollbild,
+        // feste Größe und Auflösungsabgleich gehören zum Desktop.
+        if backend == Backend::Cocoa {
+            return Err("err.remoteAppNeedsSdl".into());
+        }
+        arguments.push(remote_app_argument(profile));
+    } else {
+        arguments.extend(display_arguments(profile, backend));
+    }
+    if profile.scale != 0 {
+        arguments.push(format!("/scale:{}", profile.scale));
+    }
+    if profile.scale_desktop != 0 {
+        arguments.push(format!("/scale-desktop:{}", profile.scale_desktop));
+    }
+    if profile.admin_session {
+        arguments.push("+admin".into());
+    }
+    if !profile.keyboard_layout.trim().is_empty() {
+        arguments.push(format!("/kbd:layout:{}", profile.keyboard_layout.trim()));
+    }
+    if !profile.timezone.trim().is_empty() {
+        arguments.push(format!("/timezone:{}", profile.timezone.trim()));
+    }
     if profile.clipboard {
         arguments.push("+clipboard".into());
     }
     if profile.audio {
         arguments.push("/sound".into());
+    }
+    if profile.microphone {
+        arguments.push("/microphone".into());
     }
     // Ohne Argument reicht FreeRDP alle über CUPS eingerichteten Drucker
     // weiter. Das Backend ist mit WITH_CUPS gebaut und gegen libcups
@@ -1084,6 +1193,7 @@ fn session_launcher(profile: &RemoteProfile, binary: &Path) -> Option<PathBuf> {
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSMainNibFile</key><string>MainMenu</string>
+  <key>NSMicrophoneUsageDescription</key><string>RemoteDeskRDP leitet das Mikrofon in die RDP-Sitzung um, wenn das im Profil eingeschaltet ist.</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict>
 </plist>
@@ -2169,8 +2279,68 @@ mod tests {
             gateway_port: DEFAULT_GATEWAY_PORT,
             gateway_username: String::new(),
             gateway_domain: String::new(),
+            microphone: false,
+            scale: 0,
+            scale_desktop: 0,
+            admin_session: false,
+            keyboard_layout: String::new(),
+            timezone: String::new(),
+            remote_app_program: String::new(),
+            remote_app_cmd: String::new(),
+            remote_app_name: String::new(),
             certificate_mode: CertificateMode::Tofu,
             updated_at: "2026-07-30T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn extra_rdp_options_become_arguments() {
+        let mut profile = profile();
+        profile.microphone = true;
+        profile.scale = 140;
+        profile.scale_desktop = 200;
+        profile.admin_session = true;
+        profile.keyboard_layout = "0x00000407".into();
+        profile.timezone = "W. Europe Standard Time".into();
+        let arguments = rdp_arguments(&profile, Backend::Sdl).expect("Argumente");
+        for expected in ["/microphone", "/scale:140", "/scale-desktop:200", "+admin", "/kbd:layout:0x00000407", "/timezone:W. Europe Standard Time"] {
+            assert!(arguments.contains(&expected.to_string()), "{expected} fehlt");
+        }
+    }
+
+    #[test]
+    fn extra_rdp_options_are_absent_by_default() {
+        let arguments = rdp_arguments(&profile(), Backend::Sdl).expect("Argumente");
+        assert!(!arguments.iter().any(|a| a == "/microphone" || a == "+admin" || a.starts_with("/scale") || a.starts_with("/kbd") || a.starts_with("/timezone") || a.starts_with("/app")));
+    }
+
+    #[test]
+    fn remote_app_replaces_display_arguments() {
+        let mut profile = profile();
+        profile.remote_app_program = r"C:\Windows\notepad.exe".into();
+        profile.remote_app_cmd = r"C:\temp\a b.txt".into();
+        profile.remote_app_name = "Editor".into();
+        let arguments = rdp_arguments(&profile, Backend::Sdl).expect("Argumente");
+        assert!(arguments.contains(&r"/app:program:C:\Windows\notepad.exe,cmd:C:\temp\a b.txt,name:Editor".to_string()));
+        assert!(!arguments.iter().any(|a| a.starts_with("/size") || a == "+f" || a == "+dynamic-resolution" || a == "/smart-sizing"));
+        assert_eq!(rdp_arguments(&profile, Backend::Cocoa).unwrap_err(), "err.remoteAppNeedsSdl");
+    }
+
+    #[test]
+    fn invalid_extra_rdp_options_are_rejected() {
+        let cases: [(fn(&mut RemoteProfile), &str); 7] = [
+            (|p| p.scale = 120, "err.scaleInvalid"),
+            (|p| p.scale_desktop = 50, "err.scaleDesktopInvalid"),
+            (|p| p.keyboard_layout = "a,b".into(), "err.listValueInvalid"),
+            (|p| p.remote_app_program = "\"x\"".into(), "err.listValueInvalid"),
+            (|p| p.remote_app_name = "Name".into(), "err.remoteAppProgramRequired"),
+            (|p| p.timezone = "-x".into(), "err.timezoneInvalid"),
+            (|p| p.timezone = "a\nb".into(), "err.argumentLineBreak"),
+        ];
+        for (change, error) in cases {
+            let mut profile = profile();
+            change(&mut profile);
+            assert_eq!(validate_profile(&profile).unwrap_err(), error);
         }
     }
 

@@ -100,7 +100,7 @@ Versionsnummer benannt und unverändert bei den jeweiligen Projekten erhältlich
 ### Apache-2.0 verlangt, geänderte Dateien zu kennzeichnen
 
 Ziffer 4(b) der Apache-2.0-Lizenz verlangt, dass geänderte Dateien einen
-deutlichen Hinweis tragen. RemoteDeskRDP verändert FreeRDP in 12 Dateien und SDL
+deutlichen Hinweis tragen. RemoteDeskRDP verändert FreeRDP in 14 Dateien und SDL
 in 3 Dateien; sie sind einzeln in
 [docs/FREERDP_PATCHES.md](docs/FREERDP_PATCHES.md) und im Lizenzfenster
 der Anwendung aufgeführt.

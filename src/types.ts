@@ -45,6 +45,18 @@ export type RemoteProfile = {
   gatewayPort: number;
   gatewayUsername: string;
   gatewayDomain: string;
+  microphone: boolean;
+  /** Prozent; 0 = Vorgabe des Servers. Erlaubt: 100, 140, 180. */
+  scale: number;
+  /** Prozent; 0 = Vorgabe. Erlaubt: 100–500. */
+  scaleDesktop: number;
+  adminSession: boolean;
+  keyboardLayout: string;
+  timezone: string;
+  /** Leer = ganzer Desktop; sonst RemoteApp mit diesem Programm. */
+  remoteAppProgram: string;
+  remoteAppCmd: string;
+  remoteAppName: string;
   certificateMode: "prompt" | "tofu" | "ignore";
   updatedAt: string;
 };
@@ -92,6 +104,15 @@ export const emptyProfile = (): RemoteProfile => ({
   gatewayPort: 443,
   gatewayUsername: "",
   gatewayDomain: "",
+  microphone: false,
+  scale: 0,
+  scaleDesktop: 0,
+  adminSession: false,
+  keyboardLayout: "",
+  timezone: "",
+  remoteAppProgram: "",
+  remoteAppCmd: "",
+  remoteAppName: "",
   certificateMode: "tofu",
   updatedAt: new Date().toISOString(),
 });

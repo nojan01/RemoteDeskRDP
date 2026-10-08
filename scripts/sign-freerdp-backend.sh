@@ -120,6 +120,10 @@ fi
 # --timestamp        = sicherer Zeitstempel von Apple, ebenfalls Pflicht
 # --force            = vorhandene Signaturen ersetzen (Neubau des Backends)
 sign_flags=(--force --options runtime --timestamp --sign "${identity}")
+# Die beiden RDP-Clients duerfen das Mikrofon nutzen (/microphone). Die
+# Berechtigung steckt in der Signatur und gilt so auch im Startbundle je Sitzung.
+entitlements="${script_dir}/freerdp-client.entitlements"
+client_flags=("${sign_flags[@]}" --entitlements "${entitlements}")
 
 # Reihenfolge zaehlt: von innen nach aussen. Wird die Huelle zuerst signiert,
 # entwertet jede spaetere Signatur im Inneren das aeussere Siegel.
@@ -167,12 +171,15 @@ fi
 
 echo "Signiere ${#macho_files[@]} Mach-O-Dateien ..."
 for file in "${macho_files[@]}"; do
-  codesign "${sign_flags[@]}" "${file}"
+  case "${file##*/}" in
+    sdl-freerdp) codesign "${client_flags[@]}" "${file}" ;;
+    *) codesign "${sign_flags[@]}" "${file}" ;;
+  esac
 done
 
 # Zuletzt die Huelle: versiegelt Info.plist und Resources.
 echo "Signiere das Bundle ..."
-codesign "${sign_flags[@]}" "${backend_app}"
+codesign "${client_flags[@]}" "${backend_app}"
 
 echo "Pruefe ..."
 codesign --verify --deep --strict --verbose=2 "${backend_app}"

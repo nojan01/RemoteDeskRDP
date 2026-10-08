@@ -59,7 +59,7 @@ fi
     client/Mac/cli/AppDelegate.h client/Mac/cli/AppDelegate.m client/Mac/cli/MainMenu.xib \
     client/SDL/SDL3/sdl_context.cpp client/SDL/SDL3/sdl_context.hpp \
     client/SDL/SDL3/sdl_freerdp.cpp client/SDL/SDL3/sdl_clip.cpp client/SDL/SDL3/sdl_clip.hpp \
-    client/SDL/SDL3/sdl_window.cpp \
+    client/SDL/SDL3/sdl_window.cpp client/SDL/SDL3/sdl_channels.cpp \
     client/common/client_cliprdr_file.c include/freerdp/client/client_cliprdr_file.h
   git apply "${project_root}/scripts/patches/freerdp-3.26.0-macos-client.patch"
   # SDL only compares the macOS clipboard when a window gains focus, so nothing
