@@ -30,6 +30,11 @@
 # enthaelt. Signiert wird mit ~/.tauri/remotedesk-updater.key (abweichend:
 # REMOTEDESK_UPDATER_KEY, Kennwort: TAURI_SIGNING_PRIVATE_KEY_PASSWORD).
 #
+# Ebenso die DMG: Tauri baut sie vor dem Nachsiegeln, die App darin waere nicht
+# notarisiert und Gatekeeper wuerde sie abweisen ("Apple konnte nicht
+# ueberpruefen ..."). Deshalb entsteht die DMG hier neu aus der gestapelten App
+# und wird selbst signiert, notarisiert und gestapelt.
+#
 # Aufruf:
 #   scripts/notarize.sh [pfad-zu-RemoteDeskRDP.app]
 
@@ -66,7 +71,7 @@ if [ ! -f "${updater_key}" ]; then
   exit 1
 fi
 
-echo "== 1/6  Eingebettetes FreeRDP-Bundle nachsiegeln =="
+echo "== 1/7  Eingebettetes FreeRDP-Bundle nachsiegeln =="
 if [ -d "${backend}" ]; then
   "${script_dir}/sign-freerdp-backend.sh" "${backend}" >/dev/null
   echo "   ${backend##*/Resources/} neu gesiegelt"
@@ -76,12 +81,12 @@ fi
 
 # Ohne --deep: das wuerde die eingebetteten Bundles mit der Kennung der
 # aeusseren App ueberschreiben und das gerade erneuerte Siegel wieder zerstoeren.
-echo "== 2/6  Aeussere App neu signieren =="
+echo "== 2/7  Aeussere App neu signieren =="
 codesign --force --options runtime --timestamp --sign "${identity}" "${app}"
 codesign --verify --deep --strict "${app}"
 codesign --verify --deep --strict "${backend}"
 
-echo "== 3/6  Einreichen =="
+echo "== 3/7  Einreichen =="
 archive="$(mktemp -d)/$(basename "${app}" .app).zip"
 /usr/bin/ditto -c -k --keepParent "${app}" "${archive}"
 
@@ -110,17 +115,17 @@ PY
   exit 1
 fi
 
-echo "== 4/6  Ticket anheften =="
+echo "== 4/7  Ticket anheften =="
 xcrun stapler staple "${app}"
 
-echo "== 5/6  Nachweis =="
+echo "== 5/7  Nachweis =="
 # "accepted / source=Notarized Developer ID" ist der einzige Beleg, der zaehlt.
 spctl -a -vvv -t exec "${app}"
 xcrun stapler validate "${app}"
 
 rm -rf "$(dirname "${archive}")" "${submit_log}"
 
-echo "== 6/6  Updater-Paket =="
+echo "== 6/7  Updater-Paket =="
 plist="${app}/Contents/Info.plist"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${plist}")"
 executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${plist}")"
@@ -149,6 +154,30 @@ COPYFILE_DISABLE=1 tar -czf "${tarball}" -C "$(dirname "${app}")" "$(basename "$
 (cd "${script_dir}/.." && node scripts/create-updater-manifest.mjs \
   "${version}" "${platforms}" "${tarball}" "${release_dir}/latest.json")
 
+echo "== 7/7  DMG =="
+arch_label="$(lipo -archs "${app}/Contents/MacOS/${executable}" | sed 's/arm64/aarch64/; s/x86_64 aarch64\|aarch64 x86_64/universal/; s/x86_64/x64/')"
+dmg_dir="$(dirname "${app}")/../dmg"
+mkdir -p "${dmg_dir}"
+dmg_dir="$(cd "${dmg_dir}" && pwd)"
+dmg="${dmg_dir}/$(basename "${app}" .app)_${version}_${arch_label}.dmg"
+staging="$(mktemp -d)"
+/usr/bin/ditto "${app}" "${staging}/$(basename "${app}")"
+ln -s /Applications "${staging}/Applications"
+rm -f "${dmg}"
+hdiutil create -quiet -volname "$(basename "${app}" .app)" -srcfolder "${staging}" \
+  -fs HFS+ -format UDZO -ov "${dmg}"
+rm -rf "${staging}"
+codesign --force --timestamp --sign "${identity}" "${dmg}"
+dmg_log="$(mktemp)"
+xcrun notarytool submit "${dmg}" --keychain-profile "${profile}" --wait 2>&1 | tee "${dmg_log}"
+if ! grep -q "status: Accepted" "${dmg_log}"; then
+  echo "Apple hat die DMG abgelehnt." >&2
+  exit 1
+fi
+rm -f "${dmg_log}"
+xcrun stapler staple "${dmg}"
+spctl -a -vvv -t open --context context:primary-signature "${dmg}"
+
 echo
 echo "Fertig. Installieren mit:"
 echo "  rm -rf /Applications/$(basename "${app}") && ditto \"${app}\" \"/Applications/$(basename "${app}")\""
@@ -157,3 +186,4 @@ echo "Fuer das GitHub-Release v${version} hochladen:"
 echo "  ${tarball}"
 echo "  ${tarball}.sig"
 echo "  ${release_dir}/latest.json"
+echo "  ${dmg}"
