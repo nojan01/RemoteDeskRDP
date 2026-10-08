@@ -9,6 +9,7 @@ import { emptyProfile, resolutionPresets, type ColorDepth, type DisplayMode, typ
 import { cycleLangMode, errMsg, getLangMode, langIcon, t } from "./i18n";
 import { cycleThemeMode, getThemeMode, themeIcon } from "./theme";
 import { SshTerminal } from "./SshTerminal";
+import { confirmDialog } from "./dialogs";
 
 type Field = keyof RemoteProfile;
 
@@ -273,8 +274,8 @@ export function App() {
       const linked = profiles().find((item) => item.id === pending);
       if (linked && !readTrustedLinks().includes(linkFingerprint(linked))) {
         const target = `${linked.name} (${linked.protocol.toUpperCase()} ${linked.host})`;
-        if (!confirm(t("confirm.deepLink", { name: target }))) { setStatus({ key: "state.linkDeclined" }); return; }
-        if (confirm(t("confirm.deepLinkTrust", { name: linked.name }))) trustLink(linked);
+        if (!(await confirmDialog(t("confirm.deepLink", { name: target })))) { setStatus({ key: "state.linkDeclined" }); return; }
+        if (await confirmDialog(t("confirm.deepLinkTrust", { name: linked.name }))) trustLink(linked);
       }
       // RDP und VNC laufen jeweils in einem eigenen Fenster. Nach einem
       // DualBeam-Aufruf kann die Profilverwaltung daher stets wegklappen.
@@ -353,7 +354,7 @@ export function App() {
   };
   const remove = async () => {
     const id = selectedId();
-    if (!id || !confirm(t("confirm.delete"))) return;
+    if (!id || !(await confirmDialog(t("confirm.delete")))) return;
     try {
       await deleteProfile(id); setProfiles((items) => items.filter((item) => item.id !== id));
       newProfile(); setStatus({ key: "state.deleted" });

@@ -7,6 +7,7 @@
  */
 import { check } from "@tauri-apps/plugin-updater";
 import { activeSessionCount, appVersion, restartApplication } from "./api";
+import { confirmDialog, infoDialog } from "./dialogs";
 import { t } from "./i18n";
 
 /** Fortschrittsmeldung als Schlüssel samt Parametern für die Zustandszeile. */
@@ -23,17 +24,17 @@ export async function checkForUpdates(interactive = false, report: UpdateReporte
     const update = await check();
     if (!update) {
       report(null);
-      if (interactive) alert(t("update.upToDate", { version: await appVersion() }));
+      if (interactive) await infoDialog(t("update.upToDate", { version: await appVersion() }));
       return;
     }
     report(null);
     const question = `${t("update.available", { version: update.version, current: update.currentVersion })}\n\n${t("update.question")}`;
-    if (!confirm(question)) return;
+    if (!(await confirmDialog(question))) return;
 
     // SSH- und VNC-Sitzungen laufen im Prozess, RDP-Sitzungen werden beim
     // Neustart beendet – das darf nicht unangekündigt passieren.
     const open = await activeSessionCount().catch(() => 0);
-    if (open > 0 && !confirm(t("update.sessionsOpen", { count: open }))) return;
+    if (open > 0 && !(await confirmDialog(t("update.sessionsOpen", { count: open })))) return;
 
     let total = 0;
     let loaded = 0;
@@ -53,13 +54,13 @@ export async function checkForUpdates(interactive = false, report: UpdateReporte
       }
     });
     report("update.done", { version: update.version });
-    alert(t("update.done", { version: update.version }));
+    await infoDialog(t("update.done", { version: update.version }));
     await restartApplication();
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     console.error("Update-Prüfung fehlgeschlagen:", detail);
     report(interactive ? "err.update.failed" : null, { error: detail });
-    if (interactive) alert(`${t("err.update.failed", { error: detail })}`);
+    if (interactive) await infoDialog(t("err.update.failed", { error: detail }), "error");
   } finally {
     running = false;
   }

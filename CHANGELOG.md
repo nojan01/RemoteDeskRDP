@@ -2,6 +2,13 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## 0.7.2 – 2026-10-09
+
+- Fix the updater never installing anything: WKWebView ignores `alert()` and
+  `confirm()`, so the update prompt silently answered "no". Update, deep-link
+  and delete confirmations now use native dialogs. Installations of 0.7.0 and
+  0.7.1 need a one-time manual update from the DMG.
+
 ## 0.7.1 – 2026-10-09
 
 - Fix RDP connections aborting at launch (SIGABRT, "Library missing"): the

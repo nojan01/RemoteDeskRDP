@@ -11,6 +11,8 @@
     "core:window:allow-set-focus",
     "core:webview:allow-create-webview-window",
     "dialog:allow-open",
+    "dialog:allow-ask",
+    "dialog:allow-message",
     "deep-link:default",
     "updater:default"
   ]
