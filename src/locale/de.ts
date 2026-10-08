@@ -281,7 +281,7 @@ export const de: Record<string, string> = {
 
   "license.freerdp.h": "Geänderte Dateien in FreeRDP und SDL",
   "license.freerdp.body":
-    "<p>Die Apache-2.0-Lizenz verlangt, geänderte Dateien kenntlich zu machen. RemoteDeskRDP verändert FreeRDP 3.26.0 in <b>14 Dateien</b> und SDL 3.2.28 in <b>3 Dateien</b>:</p>" +
+    "<p>Die Apache-2.0-Lizenz verlangt, geänderte Dateien kenntlich zu machen. RemoteDeskRDP verändert FreeRDP 3.26.0 in <b>13 Dateien</b> und SDL 3.2.28 in <b>3 Dateien</b>:</p>" +
     "<p><b>FreeRDP 3.26.0</b></p>" +
     "<ul><li><code>scripts/bundle-mac-os.sh</code> – baut zusätzlich den Cocoa-Client mit.</li>" +
     "<li><code>client/Mac/Keyboard.m</code> – behebt einen Baufehler, der erst beim Bauen des Cocoa-Clients auftritt.</li>" +
@@ -291,7 +291,6 @@ export const de: Record<string, string> = {
     "<li><code>client/SDL/SDL3/sdl_freerdp.cpp</code> – stellt einmal je Bildaufbau dar statt einmal je Datenpaket.</li>" +
     "<li><code>client/SDL/SDL3/sdl_context.cpp</code> und <code>.hpp</code> – trennt Zeichnen und Darstellen; nimmt abgelegte Dateien entgegen und erkennt das Herausziehen.</li>" +
     "<li><code>client/SDL/SDL3/sdl_window.cpp</code> – schaltet das Alpha-Blenden der Bildtexturen ab; behebt Streifen bei 24 Bit und ein schwarzes Bild bei 32 Bit Farbtiefe.</li>" +
-    "<li><code>client/SDL/SDL3/sdl_channels.cpp</code> – ergänzt RemoteApp: beantwortet den RAIL-Handshake und startet das gewünschte Programm.</li>" +
     "<li><code>client/SDL/SDL3/sdl_clip.cpp</code> und <code>.hpp</code> – meldet die Zwischenablage beim Verbindungsaufbau nach, überträgt Dateien in beide Richtungen und bedient Ziehen und Fallenlassen.</li>" +
     "<li><code>client/common/client_cliprdr_file.c</code> – holt Dateien aus der Sitzung ohne FUSE ab und behebt einen Fehler bei der Prozentkodierung von Datei­namen.</li>" +
     "<li><code>include/freerdp/client/client_cliprdr_file.h</code> – ergänzt <code>cliprdr_file_context_wait_for_files</code>.</li></ul>" +
@@ -327,10 +326,6 @@ export const de: Record<string, string> = {
   "err.freerdpStart": "FreeRDP konnte nicht gestartet werden: {0}",
   "err.freerdpInput": "FreeRDP-Eingabe: {0}",
   "err.freerdpExited": "FreeRDP wurde beendet: {0}",
-  "err.remoteAppNotAllowed": "Der Server erlaubt dieses Programm nicht als RemoteApp. Auf Windows-Desktops (Pro/Enterprise) muss die Freigabeliste abgeschaltet oder das Programm freigegeben werden, siehe Hilfe.",
-  "err.remoteAppNotFound": "Der Server findet das RemoteApp-Programm nicht. Pfad prüfen, z. B. C:\\Windows\\notepad.exe (einfache Backslashes).",
-  "err.remoteAppSessionLocked": "Die Windows-Sitzung ist gesperrt; RemoteApp kann nicht starten.",
-  "err.remoteAppFailed": "Der Server konnte die RemoteApp nicht starten (Code {0}).",
   "err.freerdpExitedUnexpectedly": "FreeRDP wurde unerwartet beendet ({0}).",
   "err.rdpProfileRequired": "Diese Einstellung ist nur für RDP-Profile verfügbar.",
   "err.vncProfileRequired": "Diese Funktion ist nur für VNC-Profile verfügbar.",
@@ -380,15 +375,6 @@ export const de: Record<string, string> = {
   "display.scaleDesktop": "Skalierung (Desktop)",
   "display.scale.auto": "Vorgabe des Servers",
   "display.scaleNote": "Auf Retina-Displays wirkt der entfernte Desktop sonst winzig. „Desktop“ vergrößert Schrift und Bedienelemente in Windows, „Gerät“ teilt dem Server die Pixeldichte mit.",
-  "display.remoteAppNote": "Mit RemoteApp gelten Anzeigemodus, Fenstergröße und Größenanpassung nicht – das Fenster richtet sich nach dem Programm.",
-  "remoteApp.eyebrow": "Einzelnes Programm",
-  "remoteApp.title": "RemoteApp",
-  "remoteApp.program": "Programm",
-  "remoteApp.programPlaceholder": "Leer = ganzer Desktop, z. B. ||Outlook oder C:\\Windows\\notepad.exe",
-  "remoteApp.programNote": "„||Name“ startet eine auf dem Server veröffentlichte Anwendung, sonst den Pfad auf dem Server.",
-  "remoteApp.cmd": "Argumente (optional)",
-  "remoteApp.name": "Anzeigename (optional)",
-  "remoteApp.note": "Das Programm erscheint im Sitzungsfenster, nicht als eigenständiges macOS-Fenster. Kommas und Anführungszeichen sind nicht erlaubt. Der Server muss RemoteApp zulassen.",
   "locale.eyebrow": "Region",
   "locale.title": "Tastatur und Zeitzone",
   "locale.keyboard": "Tastaturlayout",
@@ -405,12 +391,8 @@ export const de: Record<string, string> = {
   "help.scaling.body": "<p>„Desktop“ (100–500 %) entspricht der Windows-Einstellung „Skalierung und Anordnung“. „Gerät“ (100, 140, 180 %) meldet die Pixeldichte. Ältere Server ignorieren beides.</p>",
   "help.keyboard.h": "Tastatur und Zeitzone",
   "help.keyboard.body": "<p>Ohne Angabe übernimmt FreeRDP Layout und Zeitzone des Macs. Ein eigenes Layout hilft, wenn Sonderzeichen falsch ankommen. Die Liste aller Zeitzonen gibt <code>sdl-freerdp /list:timezones</code> aus.</p>",
-  "help.remoteapp.h": "RemoteApp",
-  "help.remoteapp.body": "<p>Startet nur ein Programm statt des ganzen Desktops. Der Server muss das erlauben (Windows Server mit RemoteApp-Sammlungen oder freigegebene Programme). Unter macOS erscheint das Programm im Sitzungsfenster; eigenständige, frei verschiebbare Fenster je Programm bietet FreeRDPs SDL-Client noch nicht. Dafür enthält der mitgelieferte Client eine kleine Ergänzung, siehe Lizenzen.</p><p>Windows 10/11 Pro und Enterprise lassen nur freigegebene Programme zu. Für alle Programme in einer Administrator-Eingabeaufforderung auf dem Windows-Rechner: <code>reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Terminal Server\\TSAppAllowList\" /v fDisabledAllowList /t REG_DWORD /d 1 /f</code>. Programme werden mit einfachen Backslashes angegeben, z. B. <code>C:\\Windows\\notepad.exe</code>.</p><p>Linux-Server (xrdp, GNOME) unterstützen RemoteApp nicht. Einzelne Linux-Programme lassen sich stattdessen über SSH mit X11-Weiterleitung öffnen.</p>",
-  "err.listValueInvalid": "Tastaturlayout und RemoteApp-Angaben dürfen keine Kommas oder Anführungszeichen enthalten.",
+  "err.listValueInvalid": "Das Tastaturlayout darf keine Kommas oder Anführungszeichen enthalten.",
   "err.scaleInvalid": "Die Geräteskalierung muss 100, 140 oder 180 % betragen.",
   "err.scaleDesktopInvalid": "Die Desktop-Skalierung muss zwischen 100 und 500 % liegen.",
   "err.timezoneInvalid": "Die Zeitzone ist ungültig.",
-  "err.remoteAppProgramRequired": "Für RemoteApp-Argumente oder einen Anzeigenamen fehlt das Programm.",
-  "err.remoteAppNeedsSdl": "RemoteApp benötigt den SDL-Client; der Cocoa-Client unterstützt es nicht.",
 };

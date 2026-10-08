@@ -7,7 +7,9 @@
 - [x] **HiDPI-Skalierung** (`/scale`, `/scale-desktop`): wichtig auf Retina-Displays.
 - [x] **Admin-/Konsolensitzung** (`/admin`).
 - [x] **Tastaturlayout** (`/kbd`) und **Zeitzone**.
-- [x] **RemoteApp** (`/app`): einzelne Programme statt des ganzen Desktops.
+- [ ] **RemoteApp** (`/app`): einzelne Programme statt des ganzen Desktops.
+  Zurückgestellt: Der SDL-Client kann keine RAIL-Fensteraufträge darstellen,
+  das Programm erscheint nicht (eingefrorenes Anmeldebild bzw. Schwarzbild).
 - [ ] **Hyper-V-Konsole** (`/pcb`) und **Load-Balancing-Info** für RDS-Farmen.
 - [ ] **Entra-ID-Anmeldung** (`/sec:aad`).
 

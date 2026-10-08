@@ -5,7 +5,7 @@ greifen ein, beide liegen in `scripts/patches/`:
 
 | Patch | Ziel | Dateien |
 |---|---|---|
-| `freerdp-3.26.0-macos-client.patch` | FreeRDP, Tag `3.26.0` | 14 |
+| `freerdp-3.26.0-macos-client.patch` | FreeRDP, Tag `3.26.0` | 13 |
 | `sdl-3.2.28-clipboard-poll.patch` | SDL, Tag `release-3.2.28` | 3 |
 
 `scripts/build-freerdp-backend.sh` setzt die betroffenen Dateien zuerst per
@@ -108,18 +108,6 @@ zeigt der Gastzeiger bei skalierten Fenstern woandershin.
 das Format BGRA32, SDL3 blendet solche Texturen standardmäßig. Der Alphakanal
 des GDI-Puffers ist dafür nicht gedacht: bei 24 Bit entstehen Streifen, bei
 32 Bit bleibt das Bild schwarz.
-
-### `client/SDL/SDL3/sdl_channels.cpp` (+47 Zeilen)
-
-**Was:** Registriert beim Verbinden des RAIL-Kanals `custom` sowie die
-Rückrufe `ServerHandshake`, `ServerHandshakeEx` und `ServerExecuteResult`.
-Der Handshake fordert per `client_rail_server_start_cmd()` das Programm an;
-schlägt der Start fehl, wird die Verbindung mit einer Logmeldung beendet.
-
-**Warum:** Der SDL-Client unterstützt RemoteApp (`/app`) nicht. Er lädt zwar
-den RAIL-Kanal, antwortet aber nie auf den Handshake, also startet der Server
-das Programm nie. Die Lösung folgt dem Windows-Client. Die Programmfenster
-erscheinen nicht nahtlos, sondern im normalen Sitzungsfenster.
 
 ### `client/SDL/SDL3/sdl_clip.cpp` (273 Zeilen)
 
@@ -351,7 +339,7 @@ Umfang laut `git diff --stat` in beiden Quellbäumen:
 
 | Datei | Umfang | Grund in einem Satz |
 |---|---|---|
-| **FreeRDP** | **+1203 / −35** | |
+| **FreeRDP** | **+1156 / −35** | |
 | `scripts/bundle-mac-os.sh` | +11 | Cocoa-Client mitbauen |
 | `client/Mac/Keyboard.m` | 12 | Baufehler, der erst beim Bauen des Cocoa-Clients auffällt |
 | `client/Mac/cli/MainMenu.xib` | 3 | Fenster war auf 1024×768 festgenagelt |
@@ -361,7 +349,6 @@ Umfang laut `git diff --stat` in beiden Quellbäumen:
 | `client/SDL/SDL3/sdl_context.cpp` | 245 | Darstellung entkoppeln; Ablegen und Herausziehen |
 | `client/SDL/SDL3/sdl_context.hpp` | 23 | Deklarationen dazu |
 | `client/SDL/SDL3/sdl_window.cpp` | +11 | Alpha-Blenden aus: Streifen/Schwarzbild bei 24/32 Bit |
-| `client/SDL/SDL3/sdl_channels.cpp` | +47 | RemoteApp: Handshake beantworten, Programm starten |
 | `client/SDL/SDL3/sdl_clip.cpp` | 273 | Leere Formatliste, Dateien beidseitig, Ziehen |
 | `client/SDL/SDL3/sdl_clip.hpp` | 31 | Deklarationen dazu |
 | `client/common/client_cliprdr_file.c` | 507 | Download ohne FUSE **+ Fehler #13130** |
@@ -386,7 +373,7 @@ Cocoa-Client dort nicht gebaut wird.
 
 **Alles Übrige sind Anpassungen für RemoteDesk**: Funktionen, die FreeRDP und
 SDL auf macOS bewusst nicht anbieten (Dateien ohne FUSE, Ziehen und
-Fallenlassen, RemoteApp im SDL-Client), oder Verhalten, das für diesen Anwendungsfall nicht taugt
+Fallenlassen), oder Verhalten, das für diesen Anwendungsfall nicht taugt
 (Fenstergröße, Renderpfad, Abgleich der Zwischenablage). Sie sind kein
 Kandidat für einen Upstream-Beitrag in dieser Form.
 

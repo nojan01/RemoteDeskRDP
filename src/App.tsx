@@ -21,7 +21,7 @@ type Status = { key: string; name?: string; error?: unknown; params?: Record<str
 /** Reihenfolge der Hilfeabschnitte; die Texte stehen in den Wörterbüchern. */
 const helpSections = [
   "targets", "ports", "vnc", "ssh", "sftp", "mosh", "gateway", "udp", "reconnect", "display", "files", "folders",
-  "limits", "printer", "smartcard", "video", "microphone", "admin", "scaling", "keyboard", "remoteapp", "security", "appearance", "dualbeam",
+  "limits", "printer", "smartcard", "video", "microphone", "admin", "scaling", "keyboard", "security", "appearance", "dualbeam",
 ] as const;
 
 /** Häufige Windows-Tastaturlayouts (KLID). Freie Eingabe bleibt möglich. */
@@ -309,9 +309,6 @@ export function App() {
       if (profile) await minimizeWindow();
     };
     await listen("deep-link-connect", () => void drainLink());
-    // Lehnt der Server eine RemoteApp ab, endet die Sitzung erst nach dem
-    // Verbindungsaufbau; der Grund kommt deshalb als Ereignis.
-    await listen<string>("session-failed", (event) => setStatus({ key: "state.connectFailed", error: event.payload }));
     await drainLink();
 
     // Nur das Hauptfenster kümmert sich um Updates; Terminal- und VNC-Fenster
@@ -519,16 +516,6 @@ export function App() {
           <p>{t("display.depthNote")}</p>
           <p>{t("display.resizeNote")}</p>
           <p>{t("display.scaleNote")}</p>
-          <Show when={current().remoteAppProgram.trim()}><p>{t("display.remoteAppNote")}</p></Show>
-        </section></Show>
-
-        <Show when={current().protocol === "rdp"}><section class="section-card"><div class="section-head"><div><span class="eyebrow">{t("remoteApp.eyebrow")}</span><h2>{t("remoteApp.title")}</h2></div></div>
-          <div class="field-grid">
-            <label class="wide"><span>{t("remoteApp.program")}</span><input value={current().remoteAppProgram} onInput={(event) => update("remoteAppProgram", event.currentTarget.value)} placeholder={t("remoteApp.programPlaceholder")} /><small>{t("remoteApp.programNote")}</small></label>
-            <label class="wide"><span>{t("remoteApp.cmd")}</span><input value={current().remoteAppCmd} onInput={(event) => update("remoteAppCmd", event.currentTarget.value)} /></label>
-            <label class="wide"><span>{t("remoteApp.name")}</span><input value={current().remoteAppName} onInput={(event) => update("remoteAppName", event.currentTarget.value)} /></label>
-          </div>
-          <p>{t("remoteApp.note")}</p>
         </section></Show>
 
         <Show when={current().protocol === "rdp"}><section class="section-card"><div class="section-head"><div><span class="eyebrow">{t("locale.eyebrow")}</span><h2>{t("locale.title")}</h2></div></div>

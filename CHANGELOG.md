@@ -7,10 +7,8 @@ All notable changes to RemoteDeskRDP are documented here.
 - Update Tauri CLI and plugins: updater 2.13, dialog 2.8, deep-link 2.6,
   fs 2.6.
 - New RDP options: microphone redirection, device and desktop scaling for
-  Retina displays, administrator/console session, keyboard layout, time zone
-  and RemoteApp (single programs instead of the whole desktop).
-- The bundled SDL client now handles RemoteApp (RAIL) sessions; the patch is
-  documented in `docs/FREERDP_PATCHES.md` and the license notes.
+  Retina displays, administrator/console session, keyboard layout and time
+  zone. RemoteApp is deferred: the SDL client cannot render RAIL windows yet.
 - The app and the FreeRDP clients now carry the microphone entitlement and
   usage description, so macOS asks for permission.
 
