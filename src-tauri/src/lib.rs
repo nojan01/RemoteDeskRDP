@@ -1111,6 +1111,9 @@ fn local_timestamp() -> String {
 }
 
 fn failure_reason(log: &Arc<Mutex<Vec<String>>>, status: std::process::ExitStatus) -> String {
+    if let Some(message) = log.lock().ok().and_then(|entries| remote_app_failure(&entries)) {
+        return message;
+    }
     let detail = log.lock().ok().and_then(|entries| {
         entries
             .iter()
@@ -1122,6 +1125,20 @@ fn failure_reason(log: &Arc<Mutex<Vec<String>>>, status: std::process::ExitStatu
         Some(message) => err1("err.freerdpExited", message),
         None => err1("err.freerdpExitedUnexpectedly", status),
     }
+}
+
+/// Übersetzt die Absage des Servers beim Start einer RemoteApp (MS-RDPERP,
+/// TS_RAIL_ORDER_EXEC_RESULT) in einen Fehlercode. Ohne diese Meldung schlösse
+/// sich das Fenster kommentarlos, sobald der Server das Programm ablehnt.
+fn remote_app_failure(lines: &[String]) -> Option<String> {
+    let line = lines.iter().rfind(|line| line.contains("RemoteApp could not be started"))?;
+    let code = line.split("execResult=0x").nth(1)?.get(..4)?;
+    Some(match u16::from_str_radix(code, 16).ok()? {
+        0x0003 => "err.remoteAppNotAllowed".to_string(),
+        0x0005 => "err.remoteAppNotFound".to_string(),
+        0x0007 => "err.remoteAppSessionLocked".to_string(),
+        other => err1("err.remoteAppFailed", format!("0x{other:04x}")),
+    })
 }
 
 fn early_failure(child: &mut std::process::Child, log: &Arc<Mutex<Vec<String>>>) -> Option<String> {
@@ -1436,6 +1453,11 @@ fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), 
     let handle = app.clone();
     std::thread::spawn(move || {
         let status = child.wait();
+        // Spätere Fehler erreichen die Oberfläche sonst nicht mehr; der
+        // Aufruf ist da längst mit Ok zurückgekehrt.
+        if let Some(message) = log.lock().ok().and_then(|lines| remote_app_failure(&lines)) {
+            let _ = handle.emit("session-failed", message);
+        }
         // Warum die Sitzung endete, gehört ans Ende des Protokolls – sonst
         // steht dort nur abgeschnittener Verkehr und niemand weiss, ob
         // FreeRDP abstürzte, sich beendete oder getrennt wurde.
@@ -2882,5 +2904,14 @@ mod tests {
         assert!(!name.contains('/'), "Dateiname enthaelt Pfadtrenner: {name}");
         assert!(name.ends_with(".log"));
         assert_eq!(path.parent().unwrap().file_name().unwrap(), "logs");
+    }
+
+    #[test]
+    fn remote_app_rejection_is_mapped() {
+        let line = |code: &str| vec![format!("[ERROR][com.freerdp.client.SDL] - [sdl_rail_server_execute_result]: RemoteApp could not be started: execResult={code} rawResult=0x00000015")];
+        assert_eq!(remote_app_failure(&line("0x0003")).unwrap(), "err.remoteAppNotAllowed");
+        assert_eq!(remote_app_failure(&line("0x0005")).unwrap(), "err.remoteAppNotFound");
+        assert_eq!(remote_app_failure(&line("0x0006")).unwrap(), "err.remoteAppFailed\u{1f}0x0006");
+        assert!(remote_app_failure(&["[ERROR] anything".to_string()]).is_none());
     }
 }

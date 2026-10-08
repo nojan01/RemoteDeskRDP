@@ -309,6 +309,9 @@ export function App() {
       if (profile) await minimizeWindow();
     };
     await listen("deep-link-connect", () => void drainLink());
+    // Lehnt der Server eine RemoteApp ab, endet die Sitzung erst nach dem
+    // Verbindungsaufbau; der Grund kommt deshalb als Ereignis.
+    await listen<string>("session-failed", (event) => setStatus({ key: "state.connectFailed", error: event.payload }));
     await drainLink();
 
     // Nur das Hauptfenster kümmert sich um Updates; Terminal- und VNC-Fenster
