@@ -2,6 +2,11 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## 0.7.3 – 2026-10-09
+
+- Update Tauri CLI and plugins: updater 2.13, dialog 2.8, deep-link 2.6,
+  fs 2.6.
+
 ## 0.7.2 – 2026-10-09
 
 - Fix the updater never installing anything: WKWebView ignores `alert()` and
