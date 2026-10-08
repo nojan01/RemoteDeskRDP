@@ -1,12 +1,7 @@
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use hmac::{Hmac, Mac};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use quick_xml::de::from_str as xml_from_str;
-use reqwest::blocking::{Client as HttpClient, RequestBuilder};
-use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -279,7 +274,7 @@ enum CertificateMode {
 }
 
 fn config_dir() -> Result<PathBuf, String> {
-    let base = dirs::data_dir().ok_or_else(|| "Application-Support-Ordner nicht gefunden".to_string())?;
+    let base = dirs::data_dir().ok_or_else(|| "err.configDirMissing".to_string())?;
     Ok(base.join(PROFILE_DIRECTORY))
 }
 
@@ -308,7 +303,12 @@ fn write_profiles(profiles: &[RemoteProfile]) -> Result<(), String> {
         .find_map(|_| {
             let sequence = PROFILE_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = directory.join(format!(".profiles.json.{}.{}.tmp", std::process::id(), sequence));
-            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            // Die Datei enthält Hosts und Benutzernamen; nur der Besitzer darf lesen.
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            match options.open(&path) {
                 Ok(file) => Some(Ok((path, file))),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
                 Err(error) => Some(Err(error)),
@@ -324,6 +324,10 @@ fn write_profiles(profiles: &[RemoteProfile]) -> Result<(), String> {
     if let Err(error) = fs::rename(&temporary, profile_path()?) {
         let _ = fs::remove_file(&temporary);
         return Err(err1("err.profileWrite", error));
+    }
+    // Erst das Sichern des Ordners macht die Umbenennung absturzsicher.
+    if let Ok(handle) = fs::File::open(&directory) {
+        let _ = handle.sync_all();
     }
     Ok(())
 }
@@ -356,9 +360,17 @@ fn validate_profile(profile: &RemoteProfile) -> Result<(), String> {
     if profile.id.trim().is_empty() || profile.name.trim().is_empty() {
         return Err("err.profileNeedsIdAndName".into());
     }
-    let is_object_storage = matches!(profile.protocol, Protocol::S3 | Protocol::Swift);
-    if (!is_object_storage && profile.host.trim().is_empty()) || profile.host.chars().any(char::is_whitespace) {
+    // Objekt-Speicher lebt nur noch als Altbestand in der Profildatei.
+    if matches!(profile.protocol, Protocol::S3 | Protocol::Swift) {
+        return Err("err.objectStorageMoved".into());
+    }
+    if profile.host.trim().is_empty() || profile.host.chars().any(char::is_whitespace) {
         return Err("err.hostRequired".into());
+    }
+    // Ein führender Bindestrich würde von ssh, sftp, mosh oder FreeRDP als
+    // Option gelesen statt als Ziel.
+    if profile.host.trim().starts_with('-') || profile.username.trim().starts_with('-') {
+        return Err("err.leadingDash".into());
     }
     ensure_single_line(&profile.username)?;
     ensure_single_line(&profile.domain)?;
@@ -385,32 +397,12 @@ fn validate_profile(profile: &RemoteProfile) -> Result<(), String> {
     if profile.x11_command.len() > 1024 {
         return Err("err.x11CommandInvalid".into());
     }
-    if is_object_storage {
-        let endpoint = profile.object_endpoint.trim();
-        let valid_endpoint = reqwest::Url::parse(endpoint)
-            .ok()
-            .is_some_and(|url| matches!(url.scheme(), "https" | "http") && url.host_str().is_some());
-        if !valid_endpoint { return Err("err.objectEndpointInvalid".into()); }
-        for value in [
-            &profile.object_region, &profile.object_access_key, &profile.object_container,
-            &profile.swift_project, &profile.swift_user_domain, &profile.swift_project_domain, &profile.swift_identity_path,
-        ] { ensure_single_line(value)?; }
-        if profile.protocol == Protocol::S3 {
-            if profile.object_region.trim().is_empty() || profile.object_access_key.trim().is_empty() {
-                return Err("err.s3CredentialsRequired".into());
-            }
-        } else if profile.username.trim().is_empty() || profile.swift_project.trim().is_empty() {
-            return Err("err.swiftCredentialsRequired".into());
-        } else if !profile.swift_identity_path.starts_with('/') || profile.swift_identity_path.len() > 512 || profile.swift_identity_path.split('/').any(|segment| segment == "..") {
-            return Err("err.swiftPathInvalid".into());
-        }
-    }
     if profile.protocol == Protocol::Rdp && profile.display_mode == DisplayMode::Window {
         // FreeRDP verlangt Vielfache von 2 und lehnt Winzformate ab.
         if profile.width < 640 || profile.height < 480 {
             return Err("err.windowTooSmall".into());
         }
-        if profile.width % 2 != 0 || profile.height % 2 != 0 {
+        if !profile.width.is_multiple_of(2) || !profile.height.is_multiple_of(2) {
             return Err("err.oddDimensions".into());
         }
     }
@@ -422,6 +414,9 @@ fn validate_profile(profile: &RemoteProfile) -> Result<(), String> {
         if host.contains(':') {
             return Err("err.gatewayHostColon".into());
         }
+        if host.starts_with('-') {
+            return Err("err.leadingDash".into());
+        }
         if profile.gateway_port == 0 {
             return Err("err.gatewayPortRange".into());
         }
@@ -432,13 +427,16 @@ fn validate_profile(profile: &RemoteProfile) -> Result<(), String> {
 }
 
 fn keychain_account(profile_id: &str) -> Result<&str, String> {
-    if profile_id.trim().is_empty() || profile_id.chars().any(char::is_whitespace) {
+    if profile_id.trim().is_empty()
+        || profile_id.len() > 128
+        || profile_id.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
         return Err("err.badProfileId".into());
     }
     Ok(profile_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_password(profile_id: String, password: String) -> Result<(), String> {
     let account = keychain_account(&profile_id)?;
     if password.is_empty() || password.contains('\n') || password.contains('\r') {
@@ -456,30 +454,38 @@ fn save_password(profile_id: String, password: String) -> Result<(), String> {
     }
 }
 
-fn profile_password(profile_id: &str) -> Result<Option<String>, String> {
+/// Liest ein Geheimnis. Nur ein fehlender Eintrag bedeutet "kein Kennwort";
+/// ein gesperrter Schlüsselbund oder verweigerter Zugriff wird gemeldet,
+/// statt still ohne Kennwort zu verbinden.
+fn read_secret(service: &str, profile_id: &str) -> Result<Option<String>, String> {
     let account = keychain_account(profile_id)?;
     #[cfg(target_os = "macos")]
     {
-        match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account) {
-            Ok(secret) => String::from_utf8(secret).map(Some).map_err(|_| "Ungültiges Kennwort im Schlüsselbund".to_string()),
-            Err(_) => Ok(None),
+        match security_framework::passwords::get_generic_password(service, account) {
+            Ok(secret) => String::from_utf8(secret).map(Some).map_err(|_| "err.keychainInvalidUtf8".to_string()),
+            Err(error) if error.code() == security_framework_sys::base::errSecItemNotFound => Ok(None),
+            Err(error) => Err(err1("err.keychain", error)),
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = account;
+        let _ = (service, account);
         Ok(None)
     }
 }
 
-#[tauri::command]
+fn profile_password(profile_id: &str) -> Result<Option<String>, String> {
+    read_secret(KEYCHAIN_SERVICE, profile_id)
+}
+
+#[tauri::command(async)]
 fn load_password(profile_id: String) -> Result<Option<String>, String> {
     profile_password(&profile_id)
 }
 
 /// Entfernt nur das Sitzungskennwort. Ein fehlender Eintrag ist kein Fehler:
 /// das Passwortfeld darf ohne Vorbedingung geleert werden.
-#[tauri::command]
+#[tauri::command(async)]
 fn forget_password(profile_id: String) -> Result<(), String> {
     let account = keychain_account(&profile_id)?;
     #[cfg(target_os = "macos")]
@@ -497,7 +503,7 @@ fn forget_password(profile_id: String) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_gateway_password(profile_id: String, password: String) -> Result<(), String> {
     let account = keychain_account(&profile_id)?;
     if password.is_empty() || password.contains('\n') || password.contains('\r') {
@@ -516,28 +522,16 @@ fn save_gateway_password(profile_id: String, password: String) -> Result<(), Str
 }
 
 fn gateway_password(profile_id: &str) -> Result<Option<String>, String> {
-    let account = keychain_account(profile_id)?;
-    #[cfg(target_os = "macos")]
-    {
-        match security_framework::passwords::get_generic_password(GATEWAY_KEYCHAIN_SERVICE, account) {
-            Ok(secret) => String::from_utf8(secret).map(Some).map_err(|_| "Ungültiges Kennwort im Schlüsselbund".to_string()),
-            Err(_) => Ok(None),
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = account;
-        Ok(None)
-    }
+    read_secret(GATEWAY_KEYCHAIN_SERVICE, profile_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn load_gateway_password(profile_id: String) -> Result<Option<String>, String> {
     gateway_password(&profile_id)
 }
 
 /// Entfernt nur das Gatewaykennwort. Ein fehlender Eintrag ist kein Fehler.
-#[tauri::command]
+#[tauri::command(async)]
 fn forget_gateway_password(profile_id: String) -> Result<(), String> {
     let account = keychain_account(&profile_id)?;
     #[cfg(target_os = "macos")]
@@ -570,63 +564,6 @@ fn forget_passwords(profile_id: &str) {
     let _ = account;
 }
 
-#[tauri::command]
-fn save_object_secret(profile_id: String, secret: String) -> Result<(), String> {
-    let account = keychain_account(&profile_id)?;
-    if secret.is_empty() || secret.contains('\n') || secret.contains('\r') {
-        return Err("err.emptyPassword".into());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        security_framework::passwords::set_generic_password(OBJECT_STORAGE_KEYCHAIN_SERVICE, account, secret.as_bytes())
-            .map_err(|error| err1("err.keychain", error))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (account, secret);
-        Err("err.keychainOnlyMacos".into())
-    }
-}
-
-fn object_secret(profile_id: &str) -> Result<Option<String>, String> {
-    let account = keychain_account(profile_id)?;
-    #[cfg(target_os = "macos")]
-    {
-        match security_framework::passwords::get_generic_password(OBJECT_STORAGE_KEYCHAIN_SERVICE, account) {
-            Ok(secret) => String::from_utf8(secret).map(Some).map_err(|_| "Ungültiges Objekt-Storage-Geheimnis im Schlüsselbund".to_string()),
-            Err(_) => Ok(None),
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = account;
-        Ok(None)
-    }
-}
-
-#[tauri::command]
-fn load_object_secret(profile_id: String) -> Result<Option<String>, String> {
-    object_secret(&profile_id)
-}
-
-#[tauri::command]
-fn forget_object_secret(profile_id: String) -> Result<(), String> {
-    let account = keychain_account(&profile_id)?;
-    #[cfg(target_os = "macos")]
-    {
-        match security_framework::passwords::delete_generic_password(OBJECT_STORAGE_KEYCHAIN_SERVICE, account) {
-            Ok(()) => Ok(()),
-            Err(error) if error.code() == security_framework_sys::base::errSecItemNotFound => Ok(()),
-            Err(error) => Err(err1("err.keychain", error)),
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = account;
-        Err("err.keychainOnlyMacos".into())
-    }
-}
-
 /// Serialisiert Read-Modify-Write-Zugriffe auf die gemeinsame Profildatei.
 #[derive(Default)]
 struct ProfileStore(Mutex<()>);
@@ -635,7 +572,7 @@ fn lock_profiles(store: &ProfileStore) -> Result<std::sync::MutexGuard<'_, ()>, 
     store.0.lock().map_err(|_| "err.profileLock".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_profiles(store: tauri::State<'_, ProfileStore>) -> Result<Vec<RemoteProfile>, String> {
     let _guard = lock_profiles(&store)?;
     let mut profiles = read_profiles()?;
@@ -643,11 +580,17 @@ fn list_profiles(store: tauri::State<'_, ProfileStore>) -> Result<Vec<RemoteProf
     // RemoteDeskRDP angeboten. Alte Einträge bleiben als reversible Daten im
     // Profilarchiv, erscheinen aber nicht mehr in dieser App.
     profiles.retain(|profile| !matches!(profile.protocol, Protocol::S3 | Protocol::Swift));
-    profiles.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    // Zeitstempel als Zeitpunkt vergleichen: Unterschiedliche Nachkommastellen
+    // oder Zeitzonen würden einen reinen Textvergleich verfälschen.
+    let instant = |value: &str| chrono::DateTime::parse_from_rfc3339(value).ok().map(|time| time.with_timezone(&Utc));
+    profiles.sort_by(|a, b| match (instant(&a.updated_at), instant(&b.updated_at)) {
+        (Some(left), Some(right)) => right.cmp(&left),
+        _ => b.updated_at.cmp(&a.updated_at),
+    });
     Ok(profiles)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_profile(profile: RemoteProfile, store: tauri::State<'_, ProfileStore>) -> Result<RemoteProfile, String> {
     let _guard = lock_profiles(&store)?;
     if matches!(profile.protocol, Protocol::S3 | Protocol::Swift) {
@@ -664,8 +607,9 @@ fn save_profile(profile: RemoteProfile, store: tauri::State<'_, ProfileStore>) -
     Ok(profile)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_profile(id: String, store: tauri::State<'_, ProfileStore>) -> Result<(), String> {
+    keychain_account(&id)?;
     let _guard = lock_profiles(&store)?;
     let mut profiles = read_profiles()?;
     profiles.retain(|profile| profile.id != id);
@@ -746,17 +690,13 @@ fn rdp_executable(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Some(value) = std::env::var_os(BACKEND_OVERRIDE) {
         let path = PathBuf::from(value);
         return executable_at(&path)
-            .ok_or_else(|| format!("{BACKEND_OVERRIDE} verweist nicht auf eine Datei: {}", path.display()));
+            .ok_or_else(|| err1("err.backendOverrideMissing", format!("{BACKEND_OVERRIDE}={}", path.display())));
     }
     bundled_backends(app)
         .into_iter()
         .chain(homebrew_freerdp())
         .find_map(executable_at)
-        .ok_or_else(|| {
-            "Kein RDP-Backend gefunden. Erstelle es mit `npm run build:rdp-backend` oder setze \
-             REMOTEDESK_RDP_EXECUTABLE auf eine FreeRDP-Binärdatei."
-                .into()
-        })
+        .ok_or_else(|| "err.backendMissing".into())
 }
 
 fn rdp_target(host: &str, port: u16) -> String {
@@ -892,6 +832,7 @@ fn rdp_arguments(profile: &RemoteProfile, backend: Backend) -> Result<Vec<String
 ///     verwirft das Gateway dann **stillschweigend** (`if (count == 0)
 ///     return TRUE;`) und die Verbindung geht direkt zum Ziel.
 ///   * `\"` bzw. `\'` maskiert -> angenommen
+///
 /// Ein still umgangenes Gateway wäre der schlimmste Ausgang, deshalb wird jedes
 /// Sonderzeichen maskiert statt nur abgewiesen.
 fn escape_gateway_value(value: &str) -> String {
@@ -982,7 +923,7 @@ fn drain_stderr(child: &mut std::process::Child, log_file: Option<PathBuf>) -> A
     let sink = Arc::clone(&log);
     std::thread::spawn(move || {
         let mut file = log_file.and_then(|path| {
-            path.parent().map(|dir| fs::create_dir_all(dir));
+            path.parent().map(fs::create_dir_all);
             rotate_logs(&path);
             let mut handle = fs::File::create(path).ok()?;
             // Ohne Startzeitpunkt lässt sich eine Zeile im Sitzungsprotokoll
@@ -996,7 +937,9 @@ fn drain_stderr(child: &mut std::process::Child, log_file: Option<PathBuf>) -> A
             if let Some(handle) = file.as_mut() {
                 let _ = writeln!(handle, "{line}");
             }
-            let Ok(mut entries) = sink.lock() else { return };
+            // Ein vergifteter Mutex darf das Leeren von stderr nicht beenden,
+            // sonst blockiert FreeRDP an einem vollen Puffer.
+            let mut entries = sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             // Nur die jüngsten Meldungen behalten, damit der Speicher bei
             // langen Sitzungen nicht unbegrenzt wächst.
             if entries.len() == 200 {
@@ -1062,8 +1005,7 @@ fn failure_reason(log: &Arc<Mutex<Vec<String>>>, status: std::process::ExitStatu
     let detail = log.lock().ok().and_then(|entries| {
         entries
             .iter()
-            .filter(|line| line.contains("[ERROR]"))
-            .next_back()
+            .rfind(|line| line.contains("[ERROR]"))
             .map(|line| line.rsplit("] - ").next().unwrap_or(line).trim().to_string())
             .filter(|line| !line.is_empty())
     });
@@ -1140,7 +1082,7 @@ fn session_launcher(profile: &RemoteProfile, binary: &Path) -> Option<PathBuf> {
   <key>CFBundleIconFile</key><string>RemoteDeskRDP</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSMainNibFile</key><string>MainMenu</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict>
@@ -1181,11 +1123,15 @@ fn safe_identifier(raw: &str) -> String {
     if cleaned.is_empty() { "unbenannt".into() } else { cleaned }
 }
 
-/// Der Profilname landet in einer XML-Datei; drei Zeichen müssen maskiert
-/// werden, sonst entsteht kaputtes Plist und das Startbundle taugt nichts.
+/// Der Profilname landet in einer XML-Datei; die XML-Sonderzeichen müssen
+/// maskiert werden, sonst entsteht kaputtes Plist und das Startbundle taugt nichts.
 #[cfg(target_os = "macos")]
 fn xml_escape(raw: &str) -> String {
-    raw.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 /// Baut die Verbindung auf. Vorgeschaltet ist die Prüfung auf eine bereits
@@ -1233,6 +1179,12 @@ fn vnc_session_token() -> Result<String, String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+/// Vergleicht zwei Zeichenketten in einer Laufzeit, die nicht von der Position
+/// des ersten Unterschieds abhängt -- der Token soll nicht stückweise erratbar sein.
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+}
+
 /// Startet den eingebetteten, universellen noVNC-Viewer über einen nur lokal
 /// erreichbaren RFB-zu-WebSocket-Proxy. Die RFB-Kodierung wird zwischen noVNC
 /// und Server ausgehandelt; deshalb gibt es keinen TightVNC-Sonderweg und
@@ -1268,11 +1220,16 @@ async fn start_vnc_session(app: tauri::AppHandle, profile: RemoteProfile) -> Res
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let Ok(Ok((socket, _))) = tokio::time::timeout(remaining, listener.accept()).await else { break; };
             let path = expected_path.clone();
-            let websocket = tokio_tungstenite::accept_hdr_async(socket, move |
+            // Ein Client, der verbindet und nichts sendet, darf den Proxy nicht
+            // über das Zeitfenster hinaus blockieren.
+            // Der Fehlertyp ist von tungstenites Callback-Trait vorgegeben.
+            #[allow(clippy::result_large_err)]
+            let handshake = tokio_tungstenite::accept_hdr_async(socket, move |
                 request: &tokio_tungstenite::tungstenite::handshake::server::Request,
                 response: tokio_tungstenite::tungstenite::handshake::server::Response,
             | {
-                if request.uri().path_and_query().map(|value| value.as_str()) == Some(path.as_str()) {
+                let presented = request.uri().path_and_query().map(|value| value.as_str()).unwrap_or("");
+                if constant_time_eq(presented.as_bytes(), path.as_bytes()) {
                     Ok(response)
                 } else {
                     Err(tokio_tungstenite::tungstenite::http::Response::builder()
@@ -1280,16 +1237,18 @@ async fn start_vnc_session(app: tauri::AppHandle, profile: RemoteProfile) -> Res
                         .body(Some("Invalid VNC session token".to_string()))
                         .expect("valid static HTTP response"))
                 }
-            }).await;
-            let Ok(websocket) = websocket else { continue; };
+            });
+            let Ok(Ok(websocket)) = tokio::time::timeout(remaining.min(Duration::from_secs(5)), handshake).await else { continue; };
             if let Ok(remote) = tokio::net::TcpStream::connect(&target).await {
                 let (mut sink, mut stream) = websocket.split();
                 let (mut remote_read, mut remote_write) = remote.into_split();
                 let web_to_rfb = async { while let Some(message) = stream.next().await { match message { Ok(tokio_tungstenite::tungstenite::Message::Binary(data)) => { if tokio::io::AsyncWriteExt::write_all(&mut remote_write, &data).await.is_err() { break; } }, Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => break, _ => {} } } };
                 let rfb_to_web = async { let mut buffer = [0u8; 64 * 1024]; loop { let read = match tokio::io::AsyncReadExt::read(&mut remote_read, &mut buffer).await { Ok(0) | Err(_) => break, Ok(read) => read }; if sink.send(tokio_tungstenite::tungstenite::Message::Binary(buffer[..read].to_vec().into())).await.is_err() { break; } } };
                 tokio::select! { _ = web_to_rfb => {}, _ = rfb_to_web => {} }
-                break;
             }
+            // Bewusst genau eine Verbindung je Token: Ein erneutes Verbinden
+            // läuft im Viewer über `start_vnc_session` mit frischem Token und
+            // Port, statt einen einmal benutzten Token weiter gelten zu lassen.
             break;
         }
         handle.state::<Sessions>().release(&id);
@@ -1338,14 +1297,19 @@ fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), 
     let mut child = command
         .spawn()
         .map_err(|e| err1("err.freerdpStart", e))?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "FreeRDP-Eingabe konnte nicht geöffnet werden".to_string())?;
-        for argument in arguments {
-            writeln!(stdin, "{argument}").map_err(|e| err1("err.freerdpInput", e))?;
-        }
+    let written = match child.stdin.as_mut() {
+        Some(stdin) => arguments
+            .iter()
+            .try_for_each(|argument| writeln!(stdin, "{argument}"))
+            .map_err(|e| err1("err.freerdpInput", e)),
+        None => Err("err.freerdpStdin".into()),
+    };
+    if let Err(error) = written {
+        // Ohne vollständige Argumente darf FreeRDP nicht als verwaister
+        // Prozess weiterlaufen.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
     }
     // FreeRDP wertet die Argumente erst nach dem Dateiende aus.
     drop(child.stdin.take());
@@ -1394,328 +1358,20 @@ fn session_log_path(profile_id: &str) -> Option<PathBuf> {
     )
 }
 
-/// Ein einheitlicher Eintrag für S3-Buckets, Swift-Container sowie deren
-/// Objekte und Präfixe. Die UI benötigt damit keine Protokollkenntnis.
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ObjectEntry {
-    name: String,
-    is_prefix: bool,
-    size: Option<u64>,
-    modified: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ObjectListing {
-    container: String,
-    prefix: String,
-    entries: Vec<ObjectEntry>,
-}
-
-#[derive(Deserialize)]
-struct S3ListResult {
-    #[serde(rename = "Contents", default)]
-    contents: Vec<S3Content>,
-    #[serde(rename = "CommonPrefixes", default)]
-    prefixes: Vec<S3Prefix>,
-}
-
-#[derive(Deserialize)]
-struct S3Content {
-    #[serde(rename = "Key")]
-    key: String,
-    #[serde(rename = "Size")]
-    size: u64,
-    #[serde(rename = "LastModified")]
-    modified: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct S3Prefix {
-    #[serde(rename = "Prefix")]
-    prefix: String,
-}
-
-type HmacSha256 = Hmac<Sha256>;
-
-fn sha256_hex(data: &[u8]) -> String {
-    hex::encode(Sha256::digest(data))
-}
-
-fn hmac_sha256(key: &[u8], data: &str) -> Vec<u8> {
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC akzeptiert Schlüssel jeder Länge");
-    mac.update(data.as_bytes());
-    mac.finalize().into_bytes().to_vec()
-}
-
-/// AWS erwartet RFC-3986-Kodierung; `application/x-www-form-urlencoded`
-/// wäre falsch, weil es Leerzeichen als `+` darstellt.
-fn aws_encode(value: &str, keep_slash: bool) -> String {
-    value.bytes().flat_map(|byte| {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') || (keep_slash && byte == b'/') {
-            String::from(byte as char).chars().collect::<Vec<_>>()
-        } else {
-            format!("%{byte:02X}").chars().collect()
-        }
-    }).collect()
-}
-
-fn object_http_client() -> Result<HttpClient, String> {
-    HttpClient::builder()
-        .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|error| err1("err.objectRequest", error))
-}
-
-fn object_response_error(response: reqwest::blocking::Response) -> String {
-    let status = response.status();
-    let detail = response.text().unwrap_or_default();
-    // Antworten können XML oder HTML enthalten; eine kurze, zeilenfreie
-    // Vorschau hilft bei Endpoint-Fehlern, ohne Zugangsdaten preiszugeben.
-    let preview = detail.replace(['\r', '\n'], " ").chars().take(240).collect::<String>();
-    err1("err.objectRequest", if preview.is_empty() { status.to_string() } else { format!("{status}: {preview}") })
-}
-
-fn require_object_secret(profile: &RemoteProfile) -> Result<String, String> {
-    object_secret(&profile.id)?.filter(|secret| !secret.is_empty()).ok_or_else(|| "err.objectSecretMissing".into())
-}
-
-fn valid_container(name: &str) -> Result<(), String> {
-    let name = name.trim();
-    if name.is_empty() || name.len() > 255 || name.contains(['/', '\\', '\r', '\n']) {
-        return Err("err.objectContainerInvalid".into());
-    }
-    Ok(())
-}
-
-fn s3_url(profile: &RemoteProfile, container: &str, key: &str, query: Option<&str>) -> Result<reqwest::Url, String> {
-    valid_container(container)?;
-    let mut url = reqwest::Url::parse(profile.object_endpoint.trim()).map_err(|_| "err.objectEndpointInvalid")?;
-    let base_path = url.path().trim_end_matches('/').to_string();
-    let encoded_key = aws_encode(key.trim_start_matches('/'), true);
-    if profile.object_path_style {
-        url.set_path(&format!("{base_path}/{}/{}", aws_encode(container, false), encoded_key));
-    } else {
-        let host = url.host_str().ok_or("err.objectEndpointInvalid")?;
-        url.set_host(Some(&format!("{}.{}", aws_encode(container, false), host))).map_err(|_| "err.objectEndpointInvalid")?;
-        url.set_path(&format!("{base_path}/{encoded_key}"));
-    }
-    url.set_query(query);
-    Ok(url)
-}
-
-fn s3_request(profile: &RemoteProfile, method: reqwest::Method, url: reqwest::Url, payload: &[u8]) -> Result<RequestBuilder, String> {
-    let secret = require_object_secret(profile)?;
-    let now = Utc::now();
-    let short_date = now.format("%Y%m%d").to_string();
-    let timestamp = now.format("%Y%m%dT%H%M%SZ").to_string();
-    let payload_hash = sha256_hex(payload);
-    let host = match url.port() {
-        Some(port) => format!("{}:{port}", url.host_str().ok_or("err.objectEndpointInvalid")?),
-        None => url.host_str().ok_or("err.objectEndpointInvalid")?.to_string(),
-    };
-    let canonical_headers = format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{timestamp}\n");
-    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
-    let canonical_request = format!("{}\n{}\n{}\n{}\n{}\n{}", method.as_str(), url.path(), url.query().unwrap_or(""), canonical_headers, signed_headers, payload_hash);
-    let scope = format!("{short_date}/{}/s3/aws4_request", profile.object_region.trim());
-    let string_to_sign = format!("AWS4-HMAC-SHA256\n{timestamp}\n{scope}\n{}", sha256_hex(canonical_request.as_bytes()));
-    let date_key = hmac_sha256(format!("AWS4{secret}").as_bytes(), &short_date);
-    let region_key = hmac_sha256(&date_key, profile.object_region.trim());
-    let service_key = hmac_sha256(&region_key, "s3");
-    let signing_key = hmac_sha256(&service_key, "aws4_request");
-    let signature = hex::encode(hmac_sha256(&signing_key, &string_to_sign));
-    let authorization = format!("AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}", profile.object_access_key.trim());
-    Ok(object_http_client()?.request(method, url)
-        .header("host", host)
-        .header("x-amz-content-sha256", payload_hash)
-        .header("x-amz-date", timestamp)
-        .header("authorization", authorization))
-}
-
-fn s3_list(profile: &RemoteProfile, container: &str, prefix: &str) -> Result<ObjectListing, String> {
-    let query = format!("delimiter=%2F&list-type=2&prefix={}", aws_encode(prefix, false));
-    let response = s3_request(profile, reqwest::Method::GET, s3_url(profile, container, "", Some(&query))?, &[])?.send().map_err(|error| err1("err.objectRequest", error))?;
-    if !response.status().is_success() { return Err(object_response_error(response)); }
-    let result: S3ListResult = xml_from_str(&response.text().map_err(|error| err1("err.objectRequest", error))?).map_err(|error| err1("err.objectRequest", error))?;
-    let mut entries = result.prefixes.into_iter().map(|item| ObjectEntry { name: item.prefix, is_prefix: true, size: None, modified: None }).collect::<Vec<_>>();
-    entries.extend(result.contents.into_iter().filter(|item| item.key != prefix).map(|item| ObjectEntry { name: item.key, is_prefix: false, size: Some(item.size), modified: item.modified }));
-    entries.sort_by(|left, right| right.is_prefix.cmp(&left.is_prefix).then_with(|| left.name.cmp(&right.name)));
-    Ok(ObjectListing { container: container.into(), prefix: prefix.into(), entries })
-}
-
-fn s3_list_containers(profile: &RemoteProfile) -> Result<ObjectListing, String> {
-    let mut url = reqwest::Url::parse(profile.object_endpoint.trim()).map_err(|_| "err.objectEndpointInvalid")?;
-    url.set_query(None);
-    let response = s3_request(profile, reqwest::Method::GET, url, &[])?.send().map_err(|error| err1("err.objectRequest", error))?;
-    if !response.status().is_success() { return Err(object_response_error(response)); }
-    #[derive(Deserialize)] struct Buckets { #[serde(rename = "Bucket", default)] bucket: Vec<Bucket> }
-    #[derive(Deserialize)] struct Bucket { #[serde(rename = "Name")] name: String }
-    #[derive(Deserialize)] struct ResultXml { #[serde(rename = "Buckets")] buckets: Buckets }
-    let result: ResultXml = xml_from_str(&response.text().map_err(|error| err1("err.objectRequest", error))?).map_err(|error| err1("err.objectRequest", error))?;
-    Ok(ObjectListing { container: String::new(), prefix: String::new(), entries: result.buckets.bucket.into_iter().map(|bucket| ObjectEntry { name: bucket.name, is_prefix: true, size: None, modified: None }).collect() })
-}
-
-#[derive(Clone)]
-struct SwiftSession { storage_url: String, token: String }
-
-/// Standort und Keystone-Pfad sind getrennte Profilfelder. Falls ein älteres
-/// Profil den Pfad bereits in der Standort-URL enthält, erkennen wir das und
-/// hängen ihn nicht doppelt an.
-fn swift_auth_url(endpoint: &str, identity_path: &str, version: SwiftAuthVersion) -> Result<reqwest::Url, String> {
-    let mut endpoint = reqwest::Url::parse(endpoint.trim()).map_err(|_| "err.objectEndpointInvalid")?;
-    let base_path = endpoint.path().trim_end_matches('/');
-    let identity_path = identity_path.trim_end_matches('/');
-    let path = if base_path.ends_with(identity_path) { base_path.to_string() } else { format!("{base_path}{identity_path}") };
-    let suffix = match version { SwiftAuthVersion::V3 => "auth/tokens", SwiftAuthVersion::V2 => "tokens" };
-    endpoint.set_path(&format!("{path}/{suffix}"));
-    Ok(endpoint)
-}
-
-fn swift_session(profile: &RemoteProfile) -> Result<SwiftSession, String> {
-    let secret = require_object_secret(profile)?;
-    let endpoint = swift_auth_url(&profile.object_endpoint, &profile.swift_identity_path, profile.swift_auth_version)?;
-    let user_domain = if profile.swift_user_domain.trim().is_empty() { "Default" } else { profile.swift_user_domain.trim() };
-    let project_domain = if profile.swift_project_domain.trim().is_empty() { "Default" } else { profile.swift_project_domain.trim() };
-    let request = match profile.swift_auth_version {
-        SwiftAuthVersion::V3 => serde_json::json!({
-            "auth": { "identity": { "methods": ["password"], "password": { "user": {
-                "name": profile.username.trim(), "domain": { "name": user_domain }, "password": secret
-            }}}, "scope": { "project": { "name": profile.swift_project.trim(), "domain": { "name": project_domain } }}}
-        }),
-        SwiftAuthVersion::V2 => serde_json::json!({
-            "auth": { "passwordCredentials": { "username": profile.username.trim(), "password": secret }, "tenantName": profile.swift_project.trim() }
-        }),
-    };
-    let response = object_http_client()?.post(endpoint).json(&request).send().map_err(|error| err1("err.objectRequest", error))?;
-    if !response.status().is_success() { return Err(object_response_error(response)); }
-    let v3_token = response.headers().get("X-Subject-Token").and_then(|value| value.to_str().ok()).filter(|value| !value.is_empty()).map(str::to_owned);
-    let body: serde_json::Value = response.json().map_err(|error| err1("err.objectRequest", error))?;
-    let (token, selected) = match profile.swift_auth_version {
-        SwiftAuthVersion::V3 => {
-            let token = v3_token.ok_or("err.swiftTokenMissing")?;
-            let endpoints = body.pointer("/token/catalog").and_then(|catalog| catalog.as_array()).into_iter().flatten()
-                .filter(|service| service.get("type").and_then(|value| value.as_str()) == Some("object-store"))
-                .flat_map(|service| service.get("endpoints").and_then(|value| value.as_array()).into_iter().flatten());
-            let selected = endpoints.filter(|endpoint| {
-                endpoint.get("interface").and_then(|value| value.as_str()) == Some("public")
-                    && (profile.object_region.trim().is_empty() || endpoint.get("region").and_then(|value| value.as_str()) == Some(profile.object_region.trim()))
-            }).find_map(|endpoint| endpoint.get("url").and_then(|value| value.as_str())).ok_or("err.swiftStorageEndpointMissing")?;
-            (token, selected)
-        }
-        SwiftAuthVersion::V2 => {
-            let token = body.pointer("/access/token/id").and_then(|value| value.as_str()).filter(|value| !value.is_empty()).ok_or("err.swiftTokenMissing")?.to_string();
-            let endpoints = body.pointer("/access/serviceCatalog").and_then(|catalog| catalog.as_array()).into_iter().flatten()
-                .filter(|service| service.get("type").and_then(|value| value.as_str()) == Some("object-store"))
-                .flat_map(|service| service.get("endpoints").and_then(|value| value.as_array()).into_iter().flatten());
-            let selected = endpoints.filter(|endpoint| profile.object_region.trim().is_empty() || endpoint.get("region").and_then(|value| value.as_str()) == Some(profile.object_region.trim()))
-                .find_map(|endpoint| endpoint.get("publicURL").and_then(|value| value.as_str())).ok_or("err.swiftStorageEndpointMissing")?;
-            (token, selected)
-        }
-    };
-    Ok(SwiftSession { storage_url: selected.trim_end_matches('/').to_string(), token })
-}
-
-fn swift_url(session: &SwiftSession, container: &str, key: &str, query: Option<&str>) -> Result<reqwest::Url, String> {
-    let mut url = reqwest::Url::parse(&session.storage_url).map_err(|_| "err.objectEndpointInvalid")?;
-    if !container.trim().is_empty() {
-        valid_container(container)?;
-        let path = format!("{}/{}/{}", url.path().trim_end_matches('/'), aws_encode(container, false), aws_encode(key.trim_start_matches('/'), true));
-        url.set_path(&path);
-    }
-    url.set_query(query);
-    Ok(url)
-}
-
-fn swift_request(client: &HttpClient, session: &SwiftSession, method: reqwest::Method, url: reqwest::Url) -> RequestBuilder {
-    client.request(method, url).header("X-Auth-Token", &session.token)
-}
-
-fn swift_list(profile: &RemoteProfile, container: &str, prefix: &str) -> Result<ObjectListing, String> {
-    let client = object_http_client()?;
-    let session = swift_session(profile)?;
-    let query = format!("format=json&delimiter=%2F&prefix={}", aws_encode(prefix, false));
-    let response = swift_request(&client, &session, reqwest::Method::GET, swift_url(&session, container, "", Some(&query))?).send().map_err(|error| err1("err.objectRequest", error))?;
-    if !response.status().is_success() { return Err(object_response_error(response)); }
-    let items: Vec<serde_json::Value> = response.json().map_err(|error| err1("err.objectRequest", error))?;
-    let entries = items.into_iter().filter_map(|item| {
-        if let Some(prefix) = item.get("subdir").and_then(|value| value.as_str()) { Some(ObjectEntry { name: prefix.into(), is_prefix: true, size: None, modified: None }) }
-        else { item.get("name").and_then(|value| value.as_str()).map(|name| ObjectEntry { name: name.into(), is_prefix: false, size: item.get("bytes").and_then(|value| value.as_u64()), modified: item.get("last_modified").and_then(|value| value.as_str()).map(str::to_owned) }) }
-    }).collect();
-    Ok(ObjectListing { container: container.into(), prefix: prefix.into(), entries })
-}
-
-fn swift_list_containers(profile: &RemoteProfile) -> Result<ObjectListing, String> {
-    let client = object_http_client()?;
-    let session = swift_session(profile)?;
-    let response = swift_request(&client, &session, reqwest::Method::GET, swift_url(&session, "", "", Some("format=json"))?).send().map_err(|error| err1("err.objectRequest", error))?;
-    if !response.status().is_success() { return Err(object_response_error(response)); }
-    let items: Vec<serde_json::Value> = response.json().map_err(|error| err1("err.objectRequest", error))?;
-    Ok(ObjectListing { container: String::new(), prefix: String::new(), entries: items.into_iter().filter_map(|item| item.get("name").and_then(|value| value.as_str()).map(|name| ObjectEntry { name: name.into(), is_prefix: true, size: item.get("bytes").and_then(|value| value.as_u64()), modified: None })).collect() })
-}
-
+/// Asynchron mit eigenem Blockier-Thread: Der Start wartet bewusst einige
+/// hundert Millisekunden auf frühe FreeRDP-Fehler. Synchron liefe das auf dem
+/// Hauptthread und liesse die Oberfläche währenddessen einfrieren.
 #[tauri::command]
-fn list_object_storage(profile: RemoteProfile, container: String, prefix: String) -> Result<ObjectListing, String> {
-    validate_profile(&profile)?;
-    if !matches!(profile.protocol, Protocol::S3 | Protocol::Swift) { return Err("err.objectProfileRequired".into()); }
-    if container.trim().is_empty() {
-        return match profile.protocol { Protocol::S3 => s3_list_containers(&profile), Protocol::Swift => swift_list_containers(&profile), _ => unreachable!() };
-    }
-    match profile.protocol { Protocol::S3 => s3_list(&profile, &container, &prefix), Protocol::Swift => swift_list(&profile, &container, &prefix), _ => unreachable!() }
+async fn connect_profile(app: tauri::AppHandle, profile: RemoteProfile) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || connect_profile_blocking(&app, profile))
+        .await
+        .map_err(|error| err1("err.freerdpStart", error))?
 }
 
-fn s3_put(profile: &RemoteProfile, container: &str, key: &str, bytes: Vec<u8>) -> Result<(), String> {
-    let response = s3_request(profile, reqwest::Method::PUT, s3_url(profile, container, key, None)?, &bytes)?.header(CONTENT_TYPE, "application/octet-stream").body(bytes).send().map_err(|error| err1("err.objectRequest", error))?;
-    if response.status().is_success() { Ok(()) } else { Err(object_response_error(response)) }
-}
-
-fn swift_put(profile: &RemoteProfile, container: &str, key: &str, bytes: Vec<u8>) -> Result<(), String> {
-    let client = object_http_client()?; let session = swift_session(profile)?;
-    let response = swift_request(&client, &session, reqwest::Method::PUT, swift_url(&session, container, key, None)?).header(CONTENT_TYPE, "application/octet-stream").body(bytes).send().map_err(|error| err1("err.objectRequest", error))?;
-    if response.status().is_success() { Ok(()) } else { Err(object_response_error(response)) }
-}
-
-#[tauri::command]
-fn upload_object(profile: RemoteProfile, container: String, key: String, source_path: String) -> Result<(), String> {
-    validate_profile(&profile)?; valid_container(&container)?;
-    if key.trim().is_empty() || key.starts_with('/') || key.contains(['\r', '\n']) { return Err("err.objectKeyInvalid".into()); }
-    let bytes = fs::read(&source_path).map_err(|error| err1("err.objectFileRead", error))?;
-    match profile.protocol { Protocol::S3 => s3_put(&profile, &container, &key, bytes), Protocol::Swift => swift_put(&profile, &container, &key, bytes), _ => Err("err.objectProfileRequired".into()) }
-}
-
-#[tauri::command]
-fn delete_object(profile: RemoteProfile, container: String, key: String) -> Result<(), String> {
-    validate_profile(&profile)?; valid_container(&container)?;
-    let response = match profile.protocol {
-        Protocol::S3 => s3_request(&profile, reqwest::Method::DELETE, s3_url(&profile, &container, &key, None)?, &[])?.send().map_err(|error| err1("err.objectRequest", error))?,
-        Protocol::Swift => { let client = object_http_client()?; let session = swift_session(&profile)?; swift_request(&client, &session, reqwest::Method::DELETE, swift_url(&session, &container, &key, None)?).send().map_err(|error| err1("err.objectRequest", error))? },
-        _ => return Err("err.objectProfileRequired".into()),
-    };
-    if response.status().is_success() { Ok(()) } else { Err(object_response_error(response)) }
-}
-
-#[tauri::command]
-fn download_object(profile: RemoteProfile, container: String, key: String, destination_directory: String) -> Result<String, String> {
-    validate_profile(&profile)?; valid_container(&container)?;
-    let filename = Path::new(&key).file_name().and_then(|name| name.to_str()).filter(|name| !name.is_empty()).ok_or("err.objectKeyInvalid")?;
-    let destination = Path::new(&destination_directory).join(filename);
-    if destination.exists() { return Err("err.objectDownloadExists".into()); }
-    let response = match profile.protocol {
-        Protocol::S3 => s3_request(&profile, reqwest::Method::GET, s3_url(&profile, &container, &key, None)?, &[])?.send().map_err(|error| err1("err.objectRequest", error))?,
-        Protocol::Swift => { let client = object_http_client()?; let session = swift_session(&profile)?; swift_request(&client, &session, reqwest::Method::GET, swift_url(&session, &container, &key, None)?).send().map_err(|error| err1("err.objectRequest", error))? },
-        _ => return Err("err.objectProfileRequired".into()),
-    };
-    if !response.status().is_success() { return Err(object_response_error(response)); }
-    let bytes = response.bytes().map_err(|error| err1("err.objectRequest", error))?;
-    fs::write(&destination, bytes).map_err(|error| err1("err.objectFileWrite", error))?;
-    Ok(destination.display().to_string())
-}
-
-#[tauri::command]
-fn connect_profile(app: tauri::AppHandle, profile: RemoteProfile) -> Result<(), String> {
+fn connect_profile_blocking(app: &tauri::AppHandle, profile: RemoteProfile) -> Result<(), String> {
     validate_profile(&profile)?;
     match profile.protocol {
-        Protocol::Rdp => connect_rdp(&app, &profile),
+        Protocol::Rdp => connect_rdp(app, &profile),
         Protocol::Vnc => Err("err.vncEmbeddedOnly".into()),
         Protocol::Ssh => Err("err.sshEmbeddedOnly".into()),
         Protocol::Sftp => Err("err.sftpEmbeddedOnly".into()),
@@ -1761,13 +1417,48 @@ struct Sessions(Mutex<HashMap<String, u32>>);
 
 struct SshSession {
     id: u64,
-    writer: Box<dyn Write + Send>,
+    /// Eigener Lock je Sitzung: Ein hängender Schreibvorgang (volle PTY)
+    /// blockiert so nicht alle anderen Terminalfenster.
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     uses_x11: bool,
 }
 
-struct SshSessions(Mutex<HashMap<String, SshSession>>);
+/// `None` markiert eine Sitzung, die gerade startet. So reservieren Prüfen und
+/// Eintragen den Platz unter **einem** Lock; zwei schnelle Starts desselben
+/// Profils können nicht beide durchrutschen.
+struct SshSessions(Mutex<HashMap<String, Option<SshSession>>>);
+
+impl SshSessions {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Option<SshSession>>> {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn take(&self, profile_id: &str) -> Option<SshSession> {
+        let mut sessions = self.lock();
+        // Ein Platzhalter (Start läuft) bleibt stehen; der Start räumt selbst auf.
+        if matches!(sessions.get(profile_id), Some(Some(_))) {
+            sessions.remove(profile_id).flatten()
+        } else {
+            None
+        }
+    }
+}
+
+/// Gibt einen reservierten Platz wieder frei, falls der Start scheitert.
+struct SshReservation<'a> { sessions: &'a SshSessions, profile_id: String, armed: bool }
+
+impl Drop for SshReservation<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut sessions = self.sessions.lock();
+            if matches!(sessions.get(&self.profile_id), Some(None)) {
+                sessions.remove(&self.profile_id);
+            }
+        }
+    }
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1853,13 +1544,28 @@ fn xquartz_display() -> Result<String, String> {
     Err("err.xquartzNotInstalled".into())
 }
 
+/// Asynchron mit Blockier-Thread, weil das Warten auf XQuartz bis zu fünf
+/// Sekunden dauern kann und sonst den Hauptthread anhielte.
 #[tauri::command]
-fn start_ssh_session(app: tauri::AppHandle, profile: RemoteProfile, columns: u16, rows: u16) -> Result<(), String> {
+async fn start_ssh_session(app: tauri::AppHandle, window: tauri::WebviewWindow, profile: RemoteProfile, columns: u16, rows: u16) -> Result<(), String> {
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || start_ssh_session_blocking(&app, label, profile, columns, rows))
+        .await
+        .map_err(|error| err1("err.sshStart", error))?
+}
+
+fn start_ssh_session_blocking(app: &tauri::AppHandle, label: String, profile: RemoteProfile, columns: u16, rows: u16) -> Result<(), String> {
     if !matches!(profile.protocol, Protocol::Ssh | Protocol::Sftp | Protocol::Mosh) { return Err("err.terminalProfileRequired".into()); }
     validate_profile(&profile)?;
-    if app.state::<SshSessions>().0.lock().unwrap().contains_key(&profile.id) {
-        return Err("err.sshAlreadyRunning".into());
+    let ssh_sessions = app.state::<SshSessions>();
+    {
+        let mut sessions = ssh_sessions.lock();
+        if sessions.contains_key(&profile.id) {
+            return Err("err.sshAlreadyRunning".into());
+        }
+        sessions.insert(profile.id.clone(), None);
     }
+    let mut reservation = SshReservation { sessions: &ssh_sessions, profile_id: profile.id.clone(), armed: true };
     let pty = native_pty_system();
     let pair = pty.openpty(PtySize { rows: rows.max(1), cols: columns.max(1), pixel_width: 0, pixel_height: 0 }).map_err(|e| err1("err.sshStart", e))?;
     let x11_display = if profile.protocol == Protocol::Ssh && profile.x11_forwarding {
@@ -1918,52 +1624,61 @@ fn start_ssh_session(app: tauri::AppHandle, profile: RemoteProfile, columns: u16
     let killer = child.clone_killer();
     let uses_x11 = profile.protocol == Protocol::Ssh && profile.x11_forwarding;
     let close_xquartz_on_exit = uses_x11 && profile.x11_close_xquartz;
-    app.state::<SshSessions>().0.lock().unwrap().insert(profile.id.clone(), SshSession { id: session_id, writer, master: pair.master, killer, uses_x11 });
+    ssh_sessions.lock().insert(profile.id.clone(), Some(SshSession { id: session_id, writer: Arc::new(Mutex::new(writer)), master: pair.master, killer, uses_x11 }));
+    reservation.armed = false;
     let id = profile.id.clone(); let output = app.clone(); let state = app.clone();
     std::thread::spawn(move || {
         let mut buffer = [0u8; 8192];
         while let Ok(count) = reader.read(&mut buffer) {
             if count == 0 { break; }
-            let _ = output.emit("ssh-data", SshData { profile_id: id.clone(), data: buffer[..count].to_vec() });
+            // Nur an das eigene Terminalfenster; andere Fenster sollen die
+            // Ausgabe (womöglich mit Kennwortabfragen) gar nicht erst sehen.
+            let _ = output.emit_to(label.as_str(), "ssh-data", SshData { profile_id: id.clone(), data: buffer[..count].to_vec() });
         }
         let _ = child.wait();
         let ssh_sessions = state.state::<SshSessions>();
-        let mut sessions = ssh_sessions.0.lock().unwrap();
-        let session_ended = if sessions.get(&id).is_some_and(|session| session.id == session_id) {
+        let mut sessions = ssh_sessions.lock();
+        let session_ended = if sessions.get(&id).is_some_and(|session| session.as_ref().is_some_and(|session| session.id == session_id)) {
             sessions.remove(&id);
             true
         } else { false };
-        let last_x11_session = session_ended && !sessions.values().any(|session| session.uses_x11);
+        let last_x11_session = session_ended && !sessions.values().flatten().any(|session| session.uses_x11);
         drop(sessions);
         // Eine alte Leseschleife darf eine inzwischen gestartete neue Sitzung
         // mit derselben Profil-ID niemals beenden.
         if !session_ended { return; }
         if close_xquartz_on_exit && last_x11_session { stop_xquartz(); }
-        let _ = output.emit("ssh-ended", SshEnded { profile_id: id });
+        let _ = output.emit_to(label.as_str(), "ssh-ended", SshEnded { profile_id: id });
     });
     Ok(())
 }
 
 #[tauri::command]
 fn write_ssh_session(app: tauri::AppHandle, profile_id: String, data: Vec<u8>) -> Result<(), String> {
-    let state = app.state::<SshSessions>();
-    let mut sessions = state.0.lock().unwrap();
-    let session = sessions.get_mut(&profile_id).ok_or("err.sshNotRunning")?;
-    session.writer.write_all(&data).map_err(|e| err1("err.sshWrite", e))?;
-    session.writer.flush().map_err(|e| err1("err.sshWrite", e))
+    let writer = app
+        .state::<SshSessions>()
+        .lock()
+        .get(&profile_id)
+        .and_then(|session| session.as_ref())
+        .map(|session| Arc::clone(&session.writer))
+        .ok_or("err.sshNotRunning")?;
+    // Geschrieben wird ausserhalb des globalen Locks.
+    let mut writer = writer.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    writer.write_all(&data).map_err(|e| err1("err.sshWrite", e))?;
+    writer.flush().map_err(|e| err1("err.sshWrite", e))
 }
 
 #[tauri::command]
 fn resize_ssh_session(app: tauri::AppHandle, profile_id: String, columns: u16, rows: u16) -> Result<(), String> {
     let sessions = app.state::<SshSessions>();
-    let sessions = sessions.0.lock().unwrap();
-    let session = sessions.get(&profile_id).ok_or("err.sshNotRunning")?;
+    let sessions = sessions.lock();
+    let session = sessions.get(&profile_id).and_then(|session| session.as_ref()).ok_or("err.sshNotRunning")?;
     session.master.resize(PtySize { rows: rows.max(1), cols: columns.max(1), pixel_width: 0, pixel_height: 0 }).map_err(|e| err1("err.sshResize", e))
 }
 
 #[tauri::command]
 fn stop_ssh_session(app: tauri::AppHandle, profile_id: String) -> Result<(), String> {
-    let mut session = app.state::<SshSessions>().0.lock().unwrap().remove(&profile_id).ok_or("err.sshNotRunning")?;
+    let mut session = app.state::<SshSessions>().take(&profile_id).ok_or("err.sshNotRunning")?;
     session.killer.kill().map_err(|e| err1("err.sshStop", e))
 }
 
@@ -1972,7 +1687,7 @@ fn stop_ssh_session(app: tauri::AppHandle, profile_id: String) -> Result<(), Str
 /// Oberfläche gerade keine Solid-Cleanup-Routine mehr ausführen kann.
 #[tauri::command]
 fn close_terminal_session(app: tauri::AppHandle, window: tauri::WebviewWindow, profile_id: String) -> Result<(), String> {
-    let session = app.state::<SshSessions>().0.lock().unwrap().remove(&profile_id);
+    let session = app.state::<SshSessions>().take(&profile_id);
     if let Some(mut session) = session {
         let _ = session.killer.kill();
     }
@@ -2307,6 +2022,7 @@ mod tests {
         assert_eq!(safe_identifier("a b/c"), "a-b-c");
         // XML: drei Zeichen wuerden das Plist zerreissen
         assert_eq!(xml_escape("Fritz & <Co>"), "Fritz &amp; &lt;Co&gt;");
+        assert_eq!(xml_escape("\"O'Neil\""), "&quot;O&apos;Neil&quot;");
     }
 
     fn profile() -> RemoteProfile {
@@ -2693,41 +2409,13 @@ mod tests {
     }
 
     #[test]
-    fn object_storage_profiles_need_an_https_or_http_endpoint() {
+    fn object_storage_profiles_are_no_longer_accepted() {
         let mut s3 = profile();
         s3.protocol = Protocol::S3;
         s3.host.clear();
-        s3.object_endpoint = "https://s3.example.test".into();
-        s3.object_region = "us-east-1".into();
-        s3.object_access_key = "access".into();
-        assert!(validate_profile(&s3).is_ok());
-        s3.object_endpoint = "s3.example.test".into();
-        assert_eq!(validate_profile(&s3).unwrap_err(), "err.objectEndpointInvalid");
-    }
-
-    #[test]
-    fn s3_path_style_keeps_object_prefixes_encoded() {
-        let mut s3 = profile();
-        s3.protocol = Protocol::S3;
-        s3.object_endpoint = "https://s3.example.test/api".into();
-        let url = s3_url(&s3, "archive", "reports/July 2026.pdf", Some("prefix=reports%2F")).unwrap();
-        assert_eq!(url.as_str(), "https://s3.example.test/api/archive/reports/July%202026.pdf?prefix=reports%2F");
-    }
-
-    #[test]
-    fn swift_location_and_keystone_path_form_the_auth_url() {
-        assert_eq!(
-            swift_auth_url("https://swiss-backup02.infomaniak.com/", "/identity/v3", SwiftAuthVersion::V3).unwrap().as_str(),
-            "https://swiss-backup02.infomaniak.com/identity/v3/auth/tokens"
-        );
-        assert_eq!(
-            swift_auth_url("https://swift.example.test/identity/v3", "/identity/v3", SwiftAuthVersion::V3).unwrap().as_str(),
-            "https://swift.example.test/identity/v3/auth/tokens"
-        );
-        assert_eq!(
-            swift_auth_url("https://swift.example.test/", "/v2.0", SwiftAuthVersion::V2).unwrap().as_str(),
-            "https://swift.example.test/v2.0/tokens"
-        );
+        assert_eq!(validate_profile(&s3).unwrap_err(), "err.objectStorageMoved");
+        s3.protocol = Protocol::Swift;
+        assert_eq!(validate_profile(&s3).unwrap_err(), "err.objectStorageMoved");
     }
 
     #[test]

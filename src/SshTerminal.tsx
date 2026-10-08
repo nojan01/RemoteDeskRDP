@@ -16,6 +16,8 @@ export function SshTerminal(props: { profile: RemoteProfile }) {
   let input: { dispose: () => void } | undefined;
   let resize: ResizeObserver | undefined;
   let autoMinimizeTimer: number | undefined;
+  let ended = false;
+  let writeErrorShown = false;
 
   onCleanup(() => {
     alive = false;
@@ -39,7 +41,10 @@ export function SshTerminal(props: { profile: RemoteProfile }) {
       const isFinishedX11App = props.profile.protocol === "ssh"
         && props.profile.x11Forwarding
         && Boolean(props.profile.x11Command.trim());
-      if (event.payload.profileId === props.profile.id && isFinishedX11App) {
+      if (event.payload.profileId !== props.profile.id) return;
+      ended = true;
+      instance.writeln(`\r\n${t("terminal.ended")}`);
+      if (isFinishedX11App) {
         // Der SSH-Prozess ist bereits beendet. Wir schließen nun auch dessen
         // minimiertes Terminalfenster, damit die nächste X11-Verbindung eine
         // neue PTY starten kann statt ein altes Dock-Fenster zu reaktivieren.
@@ -60,7 +65,13 @@ export function SshTerminal(props: { profile: RemoteProfile }) {
         if (alive) void minimizeTerminalWindow().catch(() => undefined);
       }, 600);
     }
-    input = instance.onData((data) => void writeSshSession(props.profile.id, Array.from(new TextEncoder().encode(data))).catch(() => undefined));
+    input = instance.onData((data) => void writeSshSession(props.profile.id, Array.from(new TextEncoder().encode(data))).catch((error) => {
+      // Nach Sitzungsende ist jeder Tastendruck ein erwarteter Fehler; nur
+      // einen unerwarteten Schreibfehler einmalig anzeigen.
+      if (ended || writeErrorShown) return;
+      writeErrorShown = true;
+      instance.writeln(`\r\n${t("terminal.error")}: ${errMsg(error)}`);
+    }));
     resize = new ResizeObserver(() => {
       fit.fit();
       void resizeSshSession(props.profile.id, instance.cols, instance.rows).catch(() => undefined);

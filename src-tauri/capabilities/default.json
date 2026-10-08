@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Eigene Befehle und der Ordnerdialog für Laufwerksfreigaben.",
-  "windows": ["main", "vnc-*", "ssh-*", "sftp-*", "mosh-*", "object-*"],
+  "description": "Profilzentrale: eigene Befehle, Sitzungsfenster öffnen, Ordnerdialog für Laufwerksfreigaben.",
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

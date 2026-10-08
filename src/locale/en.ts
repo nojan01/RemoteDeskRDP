@@ -43,6 +43,9 @@ export const en: Record<string, string> = {
   "state.connectFailed": "Connection failed: {error}",
   "state.folderTwice": "That folder is already shared",
   "confirm.delete": "Really delete this connection profile?",
+  "confirm.deepLink": "Another app wants to open the connection “{name}”. Connect now?",
+  "confirm.deepLinkTrust": "Trust this profile from now on and connect such requests without asking ({name})?",
+  "state.linkDeclined": "The requested connection was not opened.",
 
   // ─── Identity ───────────────────────────────────────────────────
   "field.name": "Display name",
@@ -96,6 +99,7 @@ export const en: Record<string, string> = {
   "ssh.x11.note": "Only applies to graphical Linux/Unix applications, not Windows programs. Requires XQuartz on the Mac. If it is missing, install it first from xquartz.org; RemoteDeskRDP starts XQuartz automatically when connecting. The optional shutdown only closes XQuartz when no other RemoteDeskRDP X11 session is active; other XQuartz applications will close as well.",
   "terminal.port": "SSH port",
   "terminal.error": "Terminal error",
+  "terminal.ended": "[Session ended]",
   "sftp.note": "Opens the integrated SFTP file terminal over SSH. Use get and put to download and upload securely; key and password prompts appear directly in the window.",
   "mosh.note": "Mosh signs in over SSH and then uses UDP (60000–61000 by default). Mosh must be installed locally; for example with Homebrew: brew install mosh.",
   "unit.port": "PORT",
@@ -347,4 +351,12 @@ export const en: Record<string, string> = {
   "err.moshNotInstalled": "Mosh is not installed. For example, install it with: brew install mosh",
   "err.terminalClose": "Could not close terminal window: {0}",
   "err.nameAndHostRequired": "Please enter a name and a host.",
+  "err.leadingDash": "Host, user name and gateway must not start with “-”.",
+  "err.configDirMissing": "The user configuration folder could not be found.",
+  "err.keychainInvalidUtf8": "The stored keychain entry is not valid text.",
+  "err.backendOverrideMissing": "The RDP backend specified via {0} does not exist.",
+  "err.backendMissing": "The embedded RDP backend is missing. Please reinstall the app or build the backend with scripts/build-freerdp-backend.sh.",
+  "err.freerdpStdin": "Could not open the input of the RDP backend.",
+  "err.objectStorageMoved": "S3 and Swift profiles are no longer supported here; please use DualBeam.",
+  "err.objectEmbeddedOnly": "S3 and Swift profiles cannot be opened here; please use DualBeam.",
 };

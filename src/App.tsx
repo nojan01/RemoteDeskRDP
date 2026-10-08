@@ -36,6 +36,36 @@ function readPixels(value: string, fallback: number) {
   return Number.isFinite(number) && number >= 640 && number <= 7680 ? number : fallback;
 }
 
+/** Fensterbezeichner erlauben nur wenige Zeichen. Ein Ersetzen durch „-“ ließe
+ *  zwei verschiedene IDs auf dasselbe Fenster fallen; Hex ist eindeutig. */
+function labelId(id: string) {
+  return Array.from(new TextEncoder().encode(id), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+const trustedLinksKey = "remotedesk.trustedLinks";
+/** Ein Vertrauen gilt nur für das Ziel, dem es ausgesprochen wurde: Ändert sich
+ *  Protokoll, Host, Port, Benutzer oder Gateway, wird erneut nachgefragt. */
+function linkFingerprint(profile: RemoteProfile) {
+  return JSON.stringify([
+    profile.id, profile.protocol, profile.host, profile.username,
+    profile.rdpTcpPort, profile.vncPort, profile.sshPort,
+    profile.gatewayEnabled, profile.gatewayHost, profile.gatewayPort,
+  ]);
+}
+function readTrustedLinks(): string[] {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(trustedLinksKey) ?? "[]");
+    return Array.isArray(stored) ? stored.filter((item): item is string => typeof item === "string") : [];
+  } catch { return []; }
+}
+function trustLink(profile: RemoteProfile) {
+  const fingerprint = linkFingerprint(profile);
+  const others = readTrustedLinks().filter((item) => {
+    try { return JSON.parse(item)[0] !== profile.id; } catch { return false; }
+  });
+  localStorage.setItem(trustedLinksKey, JSON.stringify([...others, fingerprint]));
+}
+
 export function App() {
   // Ein VNC-Fenster lädt dieselbe Oberfläche mit einer Profil-ID in der URL.
   // Es zeigt ausschließlich die Sitzung; das Hauptfenster bleibt Profilzentrale.
@@ -63,6 +93,10 @@ export function App() {
   // Ein später Keychain-Lesevorgang darf nie die Daten eines inzwischen
   // ausgewählten Profils überschreiben.
   let secretLoadGeneration = 0;
+  // Zuletzt aus dem Schlüsselbund gelesene bzw. dorthin geschriebene Werte.
+  // Nur Abweichungen davon werden beim Speichern zurückgeschrieben.
+  let storedPassword = "";
+  let storedGatewayPassword = "";
 
   /** Setzt die Meldung erst beim Zeichnen zusammen – dadurch folgt sie der Sprache. */
   const statusText = () => {
@@ -80,8 +114,10 @@ export function App() {
       loadGatewayPassword(profileId).catch(() => null),
     ]);
     if (generation !== secretLoadGeneration || selectedId() !== profileId) return;
-    setPassword(sessionPassword ?? "");
-    setGatewayPassword(gatewaySecret ?? "");
+    storedPassword = sessionPassword ?? "";
+    storedGatewayPassword = gatewaySecret ?? "";
+    setPassword(storedPassword);
+    setGatewayPassword(storedGatewayPassword);
   };
 
   const startVnc = async (profile: RemoteProfile) => {
@@ -105,6 +141,7 @@ export function App() {
     if (vncSavePassword() && selectedId()) {
       try {
         await savePassword(selectedId()!, enteredPassword);
+        storedPassword = enteredPassword;
         setPassword(enteredPassword);
       } catch (error) {
         setStatus({ key: "state.connectFailed", error });
@@ -144,7 +181,7 @@ export function App() {
   /** Öffnet die VNC-Sitzung in einem eigenen Fenster. Ein Profil besitzt nur
    *  ein solches Fenster; ein zweiter Aufruf bringt das vorhandene nach vorn. */
   const openVncWindow = async (profile: RemoteProfile) => {
-    const label = `vnc-${profile.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+    const label = `vnc-${labelId(profile.id)}`;
     const existing = await WebviewWindow.getByLabel(label);
     if (existing) { await existing.setFocus(); return; }
     const child = new WebviewWindow(label, {
@@ -160,7 +197,7 @@ export function App() {
     await child.once("tauri://error", (event) => setStatus({ key: "state.connectFailed", error: String(event.payload) }));
   };
   const openTerminalWindow = async (profile: RemoteProfile) => {
-    const label = `${profile.protocol}-${profile.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+    const label = `${profile.protocol}-${labelId(profile.id)}`;
     const existing = await WebviewWindow.getByLabel(label);
     if (existing) { await existing.setFocus(); return; }
     new WebviewWindow(label, { url: `/?terminal=${encodeURIComponent(profile.id)}`, title: `${profile.name} — RemoteDeskRDP`, width: 1280, height: 820, minWidth: 700, minHeight: 500, resizable: true, center: true });
@@ -224,6 +261,14 @@ export function App() {
       try { pending = await takePendingLink(); }
       catch { return; /* ohne wartenden Link ist nichts zu tun */ }
       if (!pending) return;
+      // Ein fremder Link darf nicht unbemerkt eine Verbindung aufbauen. Beim
+      // ersten Mal wird nachgefragt; danach gilt das Profil als vertraut.
+      const linked = profiles().find((item) => item.id === pending);
+      if (linked && !readTrustedLinks().includes(linkFingerprint(linked))) {
+        const target = `${linked.name} (${linked.protocol.toUpperCase()} ${linked.host})`;
+        if (!confirm(t("confirm.deepLink", { name: target }))) { setStatus({ key: "state.linkDeclined" }); return; }
+        if (confirm(t("confirm.deepLinkTrust", { name: linked.name }))) trustLink(linked);
+      }
       // RDP und VNC laufen jeweils in einem eigenen Fenster. Nach einem
       // DualBeam-Aufruf kann die Profilverwaltung daher stets wegklappen.
       const profile = await openById(pending);
@@ -234,7 +279,7 @@ export function App() {
   });
 
   const update = <K extends Field>(field: K, value: RemoteProfile[K]) => {
-    setCurrent((profile) => ({ ...profile, [field]: value, updatedAt: new Date().toISOString() }));
+    setCurrent((profile) => ({ ...profile, [field]: value }));
     setDirty(true);
   };
   const setFolders = (folders: SharedFolder[]) => update("sharedFolders", folders);
@@ -262,27 +307,29 @@ export function App() {
     secretLoadGeneration++;
     const profile = emptyProfile();
     setCurrent(profile); setSelectedId(null); setPassword(""); setGatewayPassword("");
+    storedPassword = ""; storedGatewayPassword = "";
     setDirty(true); setStatus({ key: "state.newProfile" });
   };
   const clearPassword = async () => {
     const id = selectedId();
     if (!id) { setPassword(""); return; }
-    try { await forgetPassword(id); setPassword(""); setStatus({ key: "state.passwordCleared" }); }
+    try { await forgetPassword(id); setPassword(""); storedPassword = ""; setStatus({ key: "state.passwordCleared" }); }
     catch (error) { setStatus({ key: "state.passwordClearFailed", error }); }
   };
   const clearGatewayPassword = async () => {
     const id = selectedId();
     if (!id) { setGatewayPassword(""); return; }
-    try { await forgetGatewayPassword(id); setGatewayPassword(""); setStatus({ key: "state.gatewayPasswordCleared" }); }
+    try { await forgetGatewayPassword(id); setGatewayPassword(""); storedGatewayPassword = ""; setStatus({ key: "state.gatewayPasswordCleared" }); }
     catch (error) { setStatus({ key: "state.gatewayPasswordClearFailed", error }); }
   };
   const persist = async () => {
     const profile = current();
     // Fehlercode statt Satz – die Oberfläche übersetzt ihn wie die des Backends.
     if (!profile.name.trim() || !profile.host.trim()) throw new Error("err.nameAndHostRequired");
-    const saved = await saveProfile(profile);
-    if (password()) await savePassword(saved.id, password());
-    if (gatewayPassword()) await saveGatewayPassword(saved.id, gatewayPassword());
+    const saved = await saveProfile({ ...profile, updatedAt: new Date().toISOString() });
+    const isNew = saved.id !== selectedId();
+    if (password() && (isNew || password() !== storedPassword)) { await savePassword(saved.id, password()); storedPassword = password(); }
+    if (gatewayPassword() && (isNew || gatewayPassword() !== storedGatewayPassword)) { await saveGatewayPassword(saved.id, gatewayPassword()); storedGatewayPassword = gatewayPassword(); }
     setProfiles((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
     setCurrent(saved); setSelectedId(saved.id); setDirty(false);
     return saved;

@@ -44,6 +44,9 @@ export const de: Record<string, string> = {
   "state.connectFailed": "Verbindung fehlgeschlagen: {error}",
   "state.folderTwice": "Ordner ist bereits freigegeben",
   "confirm.delete": "Dieses Verbindungsprofil wirklich löschen?",
+  "confirm.deepLink": "Eine andere App möchte die Verbindung „{name}“ öffnen. Jetzt verbinden?",
+  "confirm.deepLinkTrust": "Diesem Profil künftig vertrauen und solche Aufrufe ohne Rückfrage verbinden ({name})?",
+  "state.linkDeclined": "Die angeforderte Verbindung wurde nicht geöffnet.",
 
   // ─── Identität ──────────────────────────────────────────────────
   "field.name": "Anzeigename",
@@ -97,6 +100,7 @@ export const de: Record<string, string> = {
   "ssh.x11.note": "Gilt nur für grafische Linux-/Unix-Anwendungen, nicht für Windows-Programme. Benötigt XQuartz auf dem Mac. Falls es fehlt, zuerst von xquartz.org installieren; RemoteDeskRDP startet XQuartz beim Verbinden automatisch. Die optionale Beendigung schließt XQuartz erst, wenn keine weitere X11-Sitzung von RemoteDeskRDP aktiv ist; andere XQuartz-Anwendungen werden dabei ebenfalls beendet.",
   "terminal.port": "SSH-Port",
   "terminal.error": "Terminalfehler",
+  "terminal.ended": "[Sitzung beendet]",
   "sftp.note": "Öffnet die integrierte SFTP-Dateikonsole über SSH. Mit get und put werden Dateien sicher herunter- bzw. hochgeladen; Schlüssel- und Kennwortabfragen erscheinen direkt im Fenster.",
   "mosh.note": "Mosh baut die Anmeldung über SSH auf und nutzt danach UDP (standardmäßig 60000–61000). Mosh muss lokal installiert sein; etwa mit Homebrew: brew install mosh.",
   "unit.port": "PORT",
@@ -348,4 +352,12 @@ export const de: Record<string, string> = {
   "err.moshNotInstalled": "Mosh ist nicht installiert. Installieren Sie es beispielsweise mit: brew install mosh",
   "err.terminalClose": "Terminalfenster konnte nicht geschlossen werden: {0}",
   "err.nameAndHostRequired": "Bitte Name und Host angeben.",
+  "err.leadingDash": "Host, Benutzername und Gateway dürfen nicht mit „-“ beginnen.",
+  "err.configDirMissing": "Der Konfigurationsordner des Benutzers wurde nicht gefunden.",
+  "err.keychainInvalidUtf8": "Der gespeicherte Schlüsselbundeintrag ist kein gültiger Text.",
+  "err.backendOverrideMissing": "Das über {0} angegebene RDP-Backend existiert nicht.",
+  "err.backendMissing": "Das eingebettete RDP-Backend fehlt. Bitte die App neu installieren oder das Backend mit scripts/build-freerdp-backend.sh bauen.",
+  "err.freerdpStdin": "Die Eingabe des RDP-Backends konnte nicht geöffnet werden.",
+  "err.objectStorageMoved": "S3- und Swift-Profile werden hier nicht mehr unterstützt; bitte DualBeam verwenden.",
+  "err.objectEmbeddedOnly": "S3- und Swift-Profile lassen sich hier nicht öffnen; bitte DualBeam verwenden.",
 };

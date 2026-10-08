@@ -21,6 +21,26 @@ done
 mkdir -p "${work_root}"
 if [[ ! -d "${source_root}/.git" ]]; then
   git clone --depth 1 --branch "${freerdp_ref}" https://github.com/FreeRDP/FreeRDP.git "${source_root}"
+else
+  # Ein vorhandener Checkout kann von einem früheren Lauf mit anderem
+  # FREERDP_REF stammen. Ohne Umschalten entstünde still ein Backend aus der
+  # falschen Version, auf das der Patch womöglich nur zufällig passt.
+  wanted="$(git -C "${source_root}" rev-parse -q --verify "refs/tags/${freerdp_ref}^{commit}" 2>/dev/null || true)"
+  current="$(git -C "${source_root}" rev-parse HEAD)"
+  if [[ -z "${wanted}" ]]; then
+    git -C "${source_root}" fetch --depth 1 origin "${freerdp_ref}"
+    git -C "${source_root}" checkout --force --detach "FETCH_HEAD^{commit}"
+  elif [[ "${wanted}" != "${current}" ]]; then
+    git -C "${source_root}" checkout --force --detach "${wanted}"
+  fi
+fi
+# Optional gegen einen festen Commit prüfen, damit ein umgehängter Tag auffällt.
+if [[ -n "${FREERDP_COMMIT:-}" ]]; then
+  actual_commit="$(git -C "${source_root}" rev-parse HEAD)"
+  if [[ "${actual_commit}" != "${FREERDP_COMMIT}" ]]; then
+    echo "FreeRDP checkout ${actual_commit} does not match FREERDP_COMMIT=${FREERDP_COMMIT}" >&2
+    exit 1
+  fi
 fi
 
 (
