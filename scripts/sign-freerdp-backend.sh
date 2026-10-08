@@ -37,6 +37,85 @@ fi
 echo "Identitaet: ${identity}"
 echo "Backend:    ${backend_app}"
 
+# Symlinks aufloesen, bevor signiert wird.
+#
+# Tauri kopiert `resources/` ohne Symlinks: aus `libfreerdp-client3.3.dylib ->
+# libfreerdp-client3.3.26.0.dylib` wird eine zweite echte Datei. Deren
+# Install-Name lautet weiter `libfreerdp-client3.3.26.0.dylib`. dyld verlangt
+# bei Hardened Runtime aber, dass der Dateiname zum angefragten Namen passt,
+# und bricht mit "Library missing" (SIGABRT beim Start) ab.
+#
+# Deshalb zeigen alle Mach-O-Verweise danach direkt auf die echte Datei, und
+# die Symlinks werden entfernt.
+link_names=()
+link_targets=()
+while IFS= read -r link; do
+  [ -z "${link}" ] && continue
+  target="${link}"
+  while [ -L "${target}" ]; do
+    next="$(readlink "${target}")"
+    case "${next}" in
+      /*) target="${next}" ;;
+      *) target="$(dirname "${target}")/${next}" ;;
+    esac
+  done
+  link_names+=("$(basename "${link}")")
+  link_targets+=("$(basename "${target}")")
+done < <(find "${backend_app}" -type l -name '*.dylib')
+
+if [ "${#link_names[@]}" -gt 0 ]; then
+  echo "Loese ${#link_names[@]} Symlinks auf ..."
+  while IFS= read -r file; do
+    [ -z "${file}" ] && continue
+    changes=()
+    while IFS= read -r dep; do
+      dep_name="${dep##*/}"
+      i=0
+      while [ "${i}" -lt "${#link_names[@]}" ]; do
+        if [ "${link_names[${i}]}" = "${dep_name}" ]; then
+          changes+=(-change "${dep}" "${dep%/*}/${link_targets[${i}]}")
+          break
+        fi
+        i=$((i + 1))
+      done
+    done < <(otool -L "${file}" | tail -n +2 | awk '{ print $1 }' | grep '/' | sort -u)
+    if [ "${#changes[@]}" -gt 0 ]; then
+      install_name_tool "${changes[@]}" "${file}" 2>/dev/null
+    fi
+  done < <(
+    find "${backend_app}" -type f -print0 \
+    | xargs -0 file 2>/dev/null \
+    | grep 'Mach-O' \
+    | cut -d: -f1 \
+    | sort -u
+  )
+  find "${backend_app}" -type l -name '*.dylib' -delete
+fi
+
+# Jeder @rpath-Verweis muss jetzt auf eine echte Datei in Frameworks zeigen.
+frameworks_dir="${backend_app}/Contents/Frameworks"
+missing=0
+while IFS= read -r dep; do
+  [ -z "${dep}" ] && continue
+  if [ ! -f "${frameworks_dir}/${dep#@rpath/}" ]; then
+    echo "Fehlende Library: ${dep}" >&2
+    missing=$((missing + 1))
+  fi
+done < <(
+  find "${backend_app}" -type f -print0 \
+  | xargs -0 file 2>/dev/null \
+  | grep 'Mach-O' \
+  | cut -d: -f1 \
+  | sort -u \
+  | while IFS= read -r f; do otool -L "${f}" | tail -n +2 | awk '{ print $1 }'; done \
+  | grep '^@rpath/' \
+  | sort -u
+)
+if [ "${missing}" -gt 0 ]; then
+  echo "${missing} Verweis(e) ohne passende Datei." >&2
+  exit 1
+fi
+
 # --options runtime  = Hardened Runtime, von der Notarisierung verlangt
 # --timestamp        = sicherer Zeitstempel von Apple, ebenfalls Pflicht
 # --force            = vorhandene Signaturen ersetzen (Neubau des Backends)

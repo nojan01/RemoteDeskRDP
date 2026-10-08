@@ -2,6 +2,12 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## 0.7.1 – 2026-10-09
+
+- Fix RDP connections aborting at launch (SIGABRT, "Library missing"): the
+  bundled FreeRDP libraries no longer use symlinks, which the app bundle turned
+  into copies with mismatching install names.
+
 ## 0.7.0 – 2026-10-08
 
 - Add an in-app updater: RemoteDeskRDP checks for new releases at start and via
