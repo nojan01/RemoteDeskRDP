@@ -2,6 +2,14 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- Fix: RDP connection failures that occur after the initial start-up check
+  (e.g. TCP timeouts or a denied macOS "Local Network" permission) are now
+  reported in the UI as "Connection failed: FreeRDP exited: …" instead of
+  silently leaving the status at "Connected". Sessions closed by the user
+  are not reported.
+
 ## 0.7.5 – 2026-10-09
 
 - Fix: profiles with a saved monitor list but "Multiple monitors" switched off

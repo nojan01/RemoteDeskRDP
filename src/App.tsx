@@ -340,6 +340,9 @@ export function App() {
     };
     await listen("deep-link-connect", () => void drainLink());
     await drainLink();
+    // FreeRDP scheitert oft erst nach ein bis zwei Sekunden; das Backend
+    // meldet solche späten Abbrüche nach, damit nicht „Verbunden“ stehen bleibt.
+    await listen<{ id: string; message: string }>("session-failed", (event) => setStatus({ key: "state.connectFailed", error: event.payload.message }));
 
     // Nur das Hauptfenster kümmert sich um Updates; Terminal- und VNC-Fenster
     // sind oben bereits ausgestiegen.

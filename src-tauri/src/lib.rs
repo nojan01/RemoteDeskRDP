@@ -1268,18 +1268,57 @@ fn local_timestamp() -> String {
     })
 }
 
+/// Die jüngste aussagekräftige Fehlermeldung aus FreeRDPs stderr.
+///
+/// Beim Schliessen des Fensters meldet der SDL-Client zuletzt eine leere
+/// `[handleShow]:`-Zeile; die eigentliche Ursache steht davor. Deshalb wird die
+/// letzte **nicht leere** Meldung gesucht.
+fn last_error(log: &Arc<Mutex<Vec<String>>>) -> Option<String> {
+    let entries = log.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    entries
+        .iter()
+        .rev()
+        .filter(|line| line.contains("[ERROR]"))
+        .map(|line| line.rsplit("] - ").next().unwrap_or(line).trim().to_string())
+        // `[handleShow]:` ohne Text dahinter ist keine Ursache.
+        .find(|line| !line.rsplit("]:").next().unwrap_or("").trim().is_empty())
+}
+
 fn failure_reason(log: &Arc<Mutex<Vec<String>>>, status: std::process::ExitStatus) -> String {
-    let detail = log.lock().ok().and_then(|entries| {
-        entries
-            .iter()
-            .rfind(|line| line.contains("[ERROR]"))
-            .map(|line| line.rsplit("] - ").next().unwrap_or(line).trim().to_string())
-            .filter(|line| !line.is_empty())
-    });
-    match detail {
+    match last_error(log) {
         Some(message) => err1("err.freerdpExited", message),
         None => err1("err.freerdpExitedUnexpectedly", status),
     }
+}
+
+/// Grund für ein fehlgeschlagenes Sitzungsende, das die Oberfläche erfahren
+/// soll – oder `None`, wenn der Anwender die Sitzung selbst beendet hat.
+///
+/// Hintergrund: Ein Verbindungsaufbau scheitert oft erst nach ein bis zwei
+/// Sekunden (TCP-Zeitüberschreitung, verweigerter Zugriff aufs lokale Netz),
+/// also nach der Frühprüfung in `early_failure`. Ohne diese Nachricht blieb
+/// die Oberfläche bei „Verbunden“ stehen, obwohl FreeRDP längst weg war –
+/// gemessen, der Fehler stand nur im Sitzungsprotokoll.
+fn late_failure(log: &Arc<Mutex<Vec<String>>>, status: &std::io::Result<std::process::ExitStatus>) -> Option<String> {
+    match status {
+        Ok(state) if state.success() => None,
+        Ok(_) => {
+            let detail = last_error(log)?;
+            // `CONNECT_CANCELLED` meldet FreeRDP, wenn das Fenster geschlossen
+            // wird – das ist kein Fehler.
+            if detail.contains("CANCELLED") {
+                return None;
+            }
+            Some(err1("err.freerdpExited", detail))
+        }
+        Err(e) => Some(err1("err.freerdpExitedUnexpectedly", e)),
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct SessionFailed {
+    id: String,
+    message: String,
 }
 
 fn early_failure(child: &mut std::process::Child, log: &Arc<Mutex<Vec<String>>>) -> Option<String> {
@@ -1672,7 +1711,7 @@ fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), 
         if let Some(path) = session_log_path(&id) {
             if let Ok(mut file) = fs::OpenOptions::new().append(true).open(path) {
                 let now = local_timestamp();
-                let _ = match status {
+                let _ = match &status {
                     Ok(state) => writeln!(file, "--- Sitzung beendet {now}: {state} ---"),
                     Err(e) => writeln!(file, "--- Sitzung beendet {now}, Status unbekannt: {e} ---"),
                 };
@@ -1681,6 +1720,11 @@ fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), 
         #[cfg(unix)]
         entra::close_window(&handle, entra_label.as_deref());
         handle.state::<Sessions>().release(&id);
+        // Erst nach der Freigabe, damit ein Klick auf „Verbinden“ aus der
+        // Fehlermeldung heraus sofort wieder möglich ist.
+        if let Some(message) = late_failure(&log, &status) {
+            let _ = handle.emit("session-failed", SessionFailed { id, message });
+        }
     });
     Ok(())
 }
@@ -2819,6 +2863,28 @@ mod tests {
         for url in ["https://login.microsoftonline.com.evil.example/", "https://example.com/", "https://notlogin.live.com/"] {
             assert!(!entra::is_login_host(&url.parse().unwrap()), "{url}");
         }
+    }
+
+    #[test]
+    fn late_failure_reports_errors_but_not_user_cancel() {
+        use std::os::unix::process::ExitStatusExt;
+        let log = |lines: &[&str]| Arc::new(Mutex::new(lines.iter().map(|l| l.to_string()).collect()));
+        let failed = Ok(std::process::ExitStatus::from_raw(141 << 8));
+        let connect = log(&[
+            "[ERROR][com.freerdp.core] - [get_next_addrinfo]: ERRCONNECT_CONNECT_FAILED [0x00020006]",
+            "[ERROR][com.freerdp.client.SDL] - [handleShow]: ",
+        ]);
+        assert_eq!(
+            late_failure(&connect, &failed).as_deref(),
+            Some("err.freerdpExited\u{1f}[get_next_addrinfo]: ERRCONNECT_CONNECT_FAILED [0x00020006]")
+        );
+        let cancelled = log(&[
+            "[ERROR][com.freerdp.core] - [freerdp_abort_connect_context]: ERRCONNECT_CONNECT_CANCELLED [0x0002000B]",
+            "[ERROR][com.freerdp.client.SDL] - [handleShow]: ",
+        ]);
+        assert_eq!(late_failure(&cancelled, &Ok(std::process::ExitStatus::from_raw(131 << 8))), None);
+        assert_eq!(late_failure(&connect, &Ok(std::process::ExitStatus::from_raw(0))), None);
+        assert_eq!(late_failure(&log(&[]), &failed), None);
     }
 
     #[test]
