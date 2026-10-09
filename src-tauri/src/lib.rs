@@ -2583,12 +2583,48 @@ fn mdns_probe_query() -> Vec<u8> {
     query
 }
 
+/// Liest das Standard-Gateway aus der Routing-Tabelle.
 #[cfg(target_os = "macos")]
-fn probe_local_network() -> std::io::Result<()> {
-    use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
-    socket.set_multicast_ttl_v4(1)?;
-    socket.send_to(&mdns_probe_query(), SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 251), 5353))?;
+fn default_gateway() -> Option<std::net::IpAddr> {
+    let output = Command::new("/sbin/route").args(["-n", "get", "default"]).output().ok()?;
+    parse_default_gateway(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_default_gateway(route_output: &str) -> Option<std::net::IpAddr> {
+    route_output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("gateway:"))
+        .and_then(|gateway| gateway.trim().parse().ok())
+}
+
+/// Adresse, gegen die die Freigabe geprüft wird: der Zielrechner einer
+/// gescheiterten Verbindung, sonst das Gateway. Ein Rechner im Internet
+/// braucht keine Freigabe; die Probe fällt dort folgerichtig positiv aus.
+#[cfg(target_os = "macos")]
+fn probe_target(host: Option<&str>) -> Option<std::net::IpAddr> {
+    use std::net::ToSocketAddrs;
+    let host = host.map(str::trim).filter(|host| !host.is_empty());
+    host.and_then(|host| (host, 9u16).to_socket_addrs().ok())
+        .and_then(|mut addrs| addrs.next().map(|addr| addr.ip()))
+        .or_else(default_gateway)
+}
+
+/// Ein einzelnes Datagramm an den Discard-Port genügt: Verweigert macOS den
+/// Zugriff, scheitert schon `sendto` mit EHOSTUNREACH. Multicast an die
+/// mDNS-Gruppe wird dagegen bei fehlender Freigabe stillschweigend verworfen
+/// und dient nur noch als Rückfall ohne Gateway.
+#[cfg(target_os = "macos")]
+fn probe_local_network(target: Option<std::net::IpAddr>) -> std::io::Result<()> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, UdpSocket};
+    match target {
+        Some(ip @ IpAddr::V4(_)) => UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?.send_to(&[0], (ip, 9))?,
+        Some(ip @ IpAddr::V6(_)) => UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0))?.send_to(&[0], (ip, 9))?,
+        None => {
+            let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+            socket.set_multicast_ttl_v4(1)?;
+            socket.send_to(&mdns_probe_query(), SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 251), 5353))?
+        }
+    };
     Ok(())
 }
 
@@ -2599,11 +2635,12 @@ fn probe_local_network() -> std::io::Result<()> {
 /// erneuern; deshalb wird einige Sekunden lang wiederholt. Andere Fehler
 /// (etwa gar kein Netz) gelten nicht als fehlende Freigabe.
 #[tauri::command(async)]
-fn check_local_network() -> bool {
+fn check_local_network(host: Option<String>) -> bool {
     #[cfg(target_os = "macos")]
     {
+        let target = probe_target(host.as_deref());
         for attempt in 0..8 {
-            match probe_local_network() {
+            match probe_local_network(target) {
                 Ok(()) => return true,
                 Err(e) if e.raw_os_error() == Some(libc::EHOSTUNREACH) => {
                     if attempt < 7 {
@@ -2616,7 +2653,10 @@ fn check_local_network() -> bool {
         false
     }
     #[cfg(not(target_os = "macos"))]
-    true
+    {
+        let _ = host;
+        true
+    }
 }
 
 /// Öffnet Systemeinstellungen ▸ Datenschutz & Sicherheit ▸ Lokales Netzwerk.
@@ -2724,6 +2764,16 @@ mod tests {
         }
         assert_eq!(labels, ["_services", "_dns-sd", "_udp", "local"]);
         assert_eq!(&q[i..], &[0, 0, 12, 0, 1], "Typ PTR, Klasse IN");
+    }
+
+    /// Die Freigabe-Probe zielt auf das Gateway; die Ausgabe von `route` ist
+    /// zeilenweise mit eingerueckten Schluesseln aufgebaut.
+    #[test]
+    fn default_gateway_is_read_from_route_output() {
+        let out = "   route to: default\ndestination: default\n       mask: default\n    gateway: 192.168.8.1\n  interface: en0\n";
+        assert_eq!(parse_default_gateway(out), Some("192.168.8.1".parse().unwrap()));
+        assert_eq!(parse_default_gateway("route: writing to routing socket: not in table\n"), None);
+        assert_eq!(parse_default_gateway("    gateway: fe80::1%en0\n"), None, "Scope-IDs sind keine Adresse");
     }
 
     /// Deep-Links sind eine Aussenschnittstelle: Was hier durchrutscht, loest

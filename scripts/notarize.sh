@@ -181,6 +181,17 @@ rm -f "${dmg_log}"
 xcrun stapler staple "${dmg}"
 spctl -a -vvv -t open --context context:primary-signature "${dmg}"
 
+# macOS ordnet die Freigabe „Lokales Netzwerk“ ueber den Fingerabdruck der
+# ausfuehrbaren Datei zu. Bleibt das frisch gebaute Bundle hier bei
+# LaunchServices registriert, trifft eine installierte Kopie derselben Datei
+# die unentschiedene Regel dieses Build-Pfads und wird ohne Nachfrage
+# abgewiesen. Deshalb den Build-Pfad aus der Datenbank austragen; das Bundle
+# selbst bleibt fuer den Installationshinweis unten erhalten.
+lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+"${lsregister}" -u "${app}" >/dev/null 2>&1 || true
+find "${app}/Contents/Resources" -name "*.app" -type d -prune -print0 2>/dev/null \
+  | xargs -0 -n1 "${lsregister}" -u >/dev/null 2>&1 || true
+
 echo
 echo "Fertig. Installieren mit:"
 echo "  rm -rf /Applications/$(basename "${app}") && ditto \"${app}\" \"/Applications/$(basename "${app}")\""

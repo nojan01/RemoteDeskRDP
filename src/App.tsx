@@ -286,7 +286,7 @@ export function App() {
         setStatus({ key: "state.connected", name: profile.name });
       }
       return profile;
-    } catch (error) { setStatus({ key: "state.connectFailed", error }); return null; }
+    } catch (error) { setStatus({ key: "state.connectFailed", error }); void recheckAfterFailure(profile, error); return null; }
   };
 
   // Die Menübeschriftung folgt der Sprache; das Menü gehört dem Hauptfenster.
@@ -346,8 +346,7 @@ export function App() {
     // meldet solche späten Abbrüche nach, damit nicht „Verbunden“ stehen bleibt.
     await listen<{ id: string; message: string }>("session-failed", (event) => {
       setStatus({ key: "state.connectFailed", error: event.payload.message });
-      // Ein CONNECT_FAILED ist oft nur die fehlende Freigabe „Lokales Netzwerk“.
-      if (event.payload.message.includes("CONNECT_FAILED")) void recheckLocalNetwork();
+      void recheckAfterFailure(profiles().find((item) => item.id === event.payload.id), event.payload.message);
     });
     void recheckLocalNetwork();
 
@@ -361,8 +360,16 @@ export function App() {
   // Die Prüfung stößt zugleich die Systemabfrage an und frischt den
   // Freigabe-Zwischenspeicher nach einem Update auf; ein Fehlschlag der
   // Prüfung selbst soll nie eine Warnung auslösen.
-  const recheckLocalNetwork = async () => {
-    try { setLocalNetworkDenied(!(await checkLocalNetwork())); } catch { setLocalNetworkDenied(false); }
+  const recheckLocalNetwork = async (host?: string) => {
+    try { setLocalNetworkDenied(!(await checkLocalNetwork(host))); } catch { setLocalNetworkDenied(false); }
+  };
+
+  // Ein CONNECT_FAILED ist oft nur die fehlende Freigabe „Lokales Netzwerk“.
+  // Geprüft wird gegen den Zielrechner selbst: Nur so zeigt sich, ob gerade
+  // dieser Weg gesperrt ist.
+  const recheckAfterFailure = (profile: RemoteProfile | undefined, error: unknown) => {
+    if (!String(error).includes("CONNECT_FAILED")) return;
+    void recheckLocalNetwork(profile?.host);
   };
 
   const update = <K extends Field>(field: K, value: RemoteProfile[K]) => {
@@ -437,8 +444,9 @@ export function App() {
   };
   const connect = async () => {
     setStatus({ key: "state.connecting" });
+    let profile: RemoteProfile | undefined;
     try {
-      const profile = await persist();
+      profile = await persist();
       if (profile.protocol === "vnc") {
         await openVncWindow(profile);
         setStatus({ key: "state.vncWindowOpened", name: profile.name });
@@ -450,7 +458,7 @@ export function App() {
         setStatus({ key: "state.connected", name: profile.name });
       }
     }
-    catch (error) { setStatus({ key: "state.connectFailed", error }); }
+    catch (error) { setStatus({ key: "state.connectFailed", error }); void recheckAfterFailure(profile, error); }
   };
   createEffect(() => { document.title = dirty() ? "• RemoteDeskRDP" : "RemoteDeskRDP"; });
 

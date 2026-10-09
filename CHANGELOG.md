@@ -2,6 +2,12 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- Die Prüfung der macOS-Freigabe „Lokales Netzwerk“ sendet jetzt ein Unicast-Datagramm an das Standard-Gateway bzw. nach einem Verbindungsfehler an den Zielrechner. Die bisherige mDNS-Multicast-Probe meldete die Freigabe auch dann als erteilt, wenn macOS den Zugriff still verwarf – der Hinweis blieb deshalb aus.
+- `scripts/notarize.sh` trägt das frisch gebaute Bundle nach dem Verpacken aus LaunchServices aus. Eine registrierte Entwicklungskopie derselben Programmdatei ließ die installierte App die unentschiedene Regel dieses Pfads treffen; RDP-Verbindungen scheiterten dann ohne Nachfrage.
+- Hilfe zur Freigabe „Lokales Netzwerk“ beschreibt die tatsächliche Zuordnung über den Fingerabdruck der Programmdatei.
+
 ## 0.7.7 – 2026-10-09
 
 - New: RemoteDeskRDP checks the macOS "Local Network" permission at start-up
