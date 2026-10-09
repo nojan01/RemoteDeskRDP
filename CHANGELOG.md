@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.8 – 2026-10-09
 
 - Nach einem Update registriert sich die App beim ersten Start einmalig selbst neu bei LaunchServices (`lsregister -f -R`). macOS bindet die Freigabe „Lokales Netzwerk“ an die Build-Kennung der Programmdatei; nach einem In-Place-Update kannte der Systemdienst noch die alte Kennung und verweigerte dem neuen Build den Zugriff still, ohne erneut nachzufragen. Die Neuregistrierung löst die Aktualisierung dieses Caches aus.
 
