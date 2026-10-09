@@ -2560,8 +2560,8 @@ fn terminate_sessions(app: &tauri::AppHandle) {
 }
 
 /// Beendet alle Sitzungen und startet die App neu, damit ein installiertes
-/// Update greift. `restart()` löst kein `RunEvent::Exit` aus; aufgeräumt wird
-/// deshalb hier.
+/// Update greift. Aufgeräumt wird hier, weil der Fallback `restart()` kein
+/// `RunEvent::Exit` auslöst.
 #[tauri::command]
 fn restart_application(app: tauri::AppHandle) {
     // Der FreeRDP-Prozess stammt aus dem gerade ersetzten Bundle; deshalb
@@ -2571,6 +2571,36 @@ fn restart_application(app: tauri::AppHandle) {
     // sonst stuft nehelper ihn noch mit der alten UUID ein.
     #[cfg(target_os = "macos")]
     register_installed_bundle();
+    relaunch(&app);
+}
+
+/// Startet die App neu.
+///
+/// Auf macOS geschieht das über LaunchServices (`open -n`), nicht per
+/// direktem Spawn wie bei `AppHandle::restart`: Ein direkt gestarteter
+/// Kindprozess erbt den alten Prozess als „responsible process“, und
+/// nehelper prüft die Freigabe „Lokales Netzwerk“ dann weiter gegen dessen
+/// Mach-O-UUID – der frisch registrierte Build greift erst beim nächsten
+/// Start aus dem Finder. Ein von launchd gestarteter Prozess ist dagegen
+/// selbst verantwortlich.
+fn relaunch(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = std::env::current_exe().ok().and_then(|exe| bundle_path(&exe));
+        if let Some(bundle) = bundle {
+            let launched = Command::new("/usr/bin/open")
+                .arg("-n")
+                .arg(&bundle)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if launched {
+                app.exit(0);
+                return;
+            }
+        }
+    }
     app.restart();
 }
 
@@ -2799,7 +2829,7 @@ pub fn run() {
                     // Erst der neu gestartete Prozess wird von nehelper mit
                     // der frisch registrierten UUID eingestuft.
                     if refresh_launch_services_registration(&version) {
-                        handle.restart();
+                        relaunch(&handle);
                     }
                 });
             }

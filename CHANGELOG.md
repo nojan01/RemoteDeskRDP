@@ -2,6 +2,10 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- Der Neustart nach einem Update (und der einmalige Selbst-Neustart nach der LaunchServices-Registrierung) erfolgt auf macOS jetzt über LaunchServices (`open -n`) statt durch direktes Starten des neuen Prozesses aus dem alten heraus. Ein direkt gestarteter Prozess erbt den alten als „verantwortlichen Prozess“, sodass macOS die Freigabe „Lokales Netzwerk“ weiter gegen die alte Build-Kennung prüfte – deshalb scheiterte die erste RDP-Verbindung auch mit 0.7.9 noch, bis die App manuell neu gestartet wurde.
+
 ## 0.7.9 – 2026-10-09
 
 - Die Neuregistrierung bei LaunchServices läuft jetzt direkt nach der Installation eines Updates, noch vor dem Neustart. Der mit 0.7.8 eingeführte Lauf beim ersten Start kam zu spät: Der bereits laufende Prozess war beim Systemdienst schon mit der alten Build-Kennung eingestuft, sodass die erste RDP-Verbindung nach dem Update dennoch scheiterte und erst ein manueller Neustart half. Muss die Registrierung ausnahmsweise doch erst beim Start nachgeholt werden (z. B. nach einer Installation per DMG), startet die App sich einmalig selbst neu.
