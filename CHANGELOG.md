@@ -4,6 +4,8 @@ All notable changes to RemoteDeskRDP are documented here.
 
 ## Unreleased
 
+- Nach einem Update registriert sich die App beim ersten Start einmalig selbst neu bei LaunchServices (`lsregister -f -R`). macOS bindet die Freigabe „Lokales Netzwerk“ an die Build-Kennung der Programmdatei; nach einem In-Place-Update kannte der Systemdienst noch die alte Kennung und verweigerte dem neuen Build den Zugriff still, ohne erneut nachzufragen. Die Neuregistrierung löst die Aktualisierung dieses Caches aus.
+
 - Die Prüfung der macOS-Freigabe „Lokales Netzwerk“ sendet jetzt ein Unicast-Datagramm an das Standard-Gateway bzw. nach einem Verbindungsfehler an den Zielrechner. Die bisherige mDNS-Multicast-Probe meldete die Freigabe auch dann als erteilt, wenn macOS den Zugriff still verwarf – der Hinweis blieb deshalb aus.
 - `scripts/notarize.sh` trägt das frisch gebaute Bundle nach dem Verpacken aus LaunchServices aus. Eine registrierte Entwicklungskopie derselben Programmdatei ließ die installierte App die unentschiedene Regel dieses Pfads treffen; RDP-Verbindungen scheiterten dann ohne Nachfrage.
 - Hilfe zur Freigabe „Lokales Netzwerk“ beschreibt die tatsächliche Zuordnung über den Fingerabdruck der Programmdatei.

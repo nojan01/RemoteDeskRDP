@@ -2675,6 +2675,48 @@ fn open_local_network_settings() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+#[cfg(target_os = "macos")]
+const REGISTERED_VERSION_FILE: &str = "registered-version";
+
+/// Liefert den Pfad des App-Bundles, in dem die laufende Binary liegt.
+#[cfg(target_os = "macos")]
+fn bundle_path(exe: &Path) -> Option<PathBuf> {
+    exe.ancestors()
+        .find(|p| p.extension().is_some_and(|ext| ext == "app"))
+        .map(Path::to_path_buf)
+}
+
+/// Registriert das Bundle nach einem Update einmalig neu bei LaunchServices.
+///
+/// macOS bindet die Freigabe „Lokales Netzwerk“ an die Mach-O-UUID der
+/// Binary. Nach einem In-Place-Update kennt nehelper noch die UUID des alten
+/// Builds und lehnt den neuen still ab, bis LaunchServices eine
+/// „App installiert“-Meldung schickt. `lsregister -f -R` löst genau diese aus.
+#[cfg(target_os = "macos")]
+fn refresh_launch_services_registration(version: &str) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Some(bundle) = bundle_path(&exe) else { return };
+    let Ok(dir) = config_dir() else { return };
+    let marker = dir.join(REGISTERED_VERSION_FILE);
+    let fingerprint = format!("{version}\n{}\n", bundle.display());
+    if fs::read_to_string(&marker).is_ok_and(|previous| previous == fingerprint) {
+        return;
+    }
+    let ok = Command::new(LSREGISTER)
+        .args(["-f", "-R"])
+        .arg(&bundle)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if ok {
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(&marker, fingerprint);
+    }
+}
+
 /// Ergänzt das Standardmenü um "Nach Updates suchen …" direkt unter "Über".
 #[cfg(target_os = "macos")]
 fn install_update_menu(app: &tauri::App) -> tauri::Result<()> {
@@ -2708,7 +2750,11 @@ pub fn run() {
         .manage(UpdateMenuItem::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
-            install_update_menu(app)?;
+            {
+                install_update_menu(app)?;
+                let version = app.package_info().version.to_string();
+                std::thread::spawn(move || refresh_launch_services_registration(&version));
+            }
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
@@ -2774,6 +2820,18 @@ mod tests {
         assert_eq!(parse_default_gateway(out), Some("192.168.8.1".parse().unwrap()));
         assert_eq!(parse_default_gateway("route: writing to routing socket: not in table\n"), None);
         assert_eq!(parse_default_gateway("    gateway: fe80::1%en0\n"), None, "Scope-IDs sind keine Adresse");
+    }
+
+    /// Registriert werden darf nur das App-Bundle der laufenden Binary;
+    /// eine nackte Entwicklungs-Binary hat keines und bleibt unangetastet.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundle_path_is_the_enclosing_app() {
+        assert_eq!(
+            bundle_path(Path::new("/Applications/RemoteDeskRDP.app/Contents/MacOS/remotedeskrdp")),
+            Some(PathBuf::from("/Applications/RemoteDeskRDP.app"))
+        );
+        assert_eq!(bundle_path(Path::new("/tmp/target/debug/remotedeskrdp")), None, "nackte Binary ohne Bundle");
     }
 
     /// Deep-Links sind eine Aussenschnittstelle: Was hier durchrutscht, loest
