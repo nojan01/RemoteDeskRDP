@@ -1,6 +1,6 @@
 [package]
 name = "remotedeskrdp"
-version = "0.7.6"
+version = "0.7.7"
 description = "Standalone Remote Desktop client for macOS"
 authors = ["Norbert Jander"]
 license = "MIT"

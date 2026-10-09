@@ -1,7 +1,7 @@
 {
   "name": "remotedeskrdp",
   "private": true,
-  "version": "0.7.6",
+  "version": "0.7.7",
   "description": "Native macOS connection manager for RDP, VNC, SSH, SFTP and Mosh",
   "license": "MIT",
   "author": "Norbert Jander",

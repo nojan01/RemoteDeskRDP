@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.7 – 2026-10-09
 
 - New: RemoteDeskRDP checks the macOS "Local Network" permission at start-up
   and after a `CONNECT_FAILED` error. If access is denied, a notice with a
