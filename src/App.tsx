@@ -509,7 +509,7 @@ export function App() {
         </section></Show>
 
         <Show when={current().protocol === "rdp"}><section class="section-card"><div class="section-head"><div><span class="eyebrow">{t("display.eyebrow")}</span><h2>{t("display.title")}</h2></div></div>
-          <div class="toggle-grid"><Toggle label={t("display.multimon")} checked={current().multimon} onChange={(value) => update("multimon", value)} /></div>
+          <div class="toggle-grid"><Toggle label={t("display.multimon")} checked={current().multimon} onChange={(value) => { update("multimon", value); if (!value) update("monitors", ""); }} /></div>
           <Show when={current().multimon}>
             <label><span>{t("display.monitors")}</span><div class="password-input"><input value={current().monitors} onInput={(event) => update("monitors", event.currentTarget.value)} placeholder={t("display.monitorsAll")} /><button type="button" disabled={monitorsLoading()} onClick={() => void detectMonitors()}>{t("display.detectMonitors")}</button></div></label>
             <Show when={monitors().length > 0}>

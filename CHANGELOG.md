@@ -2,6 +2,12 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- Fix: profiles with a saved monitor list but "Multiple monitors" switched off
+  failed to connect after 0.7.4 (`err.monitorsNeedMultimon`). The list is now
+  simply ignored without the switch and cleared when the switch is turned off.
+
 ## 0.7.4 – 2026-10-09
 
 - Microsoft Entra ID sign-in (`/sec:aad`): the Microsoft login page opens in

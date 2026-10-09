@@ -513,9 +513,8 @@ fn validate_rdp_extras(profile: &RemoteProfile) -> Result<(), String> {
     {
         return Err("err.monitorsInvalid".into());
     }
-    if !monitors.is_empty() && !profile.multimon {
-        return Err("err.monitorsNeedMultimon".into());
-    }
+    // Eine Monitorliste ohne `/multimon` bleibt gespeichert, wird aber beim
+    // Start nicht übergeben – ältere Profile sollen weiter verbinden.
     let timezone = profile.timezone.trim();
     ensure_single_line(timezone)?;
     if timezone.len() > 128 || timezone.starts_with('-') {
@@ -2823,7 +2822,7 @@ mod tests {
     }
 
     #[test]
-    fn multimon_rejects_scaling_and_monitors_need_multimon() {
+    fn multimon_rejects_scaling_and_ignores_monitors_without_multimon() {
         let mut profile = profile();
         profile.multimon = true;
         profile.resize_behavior = ResizeBehavior::Scale;
@@ -2831,7 +2830,8 @@ mod tests {
         profile.multimon = false;
         profile.resize_behavior = ResizeBehavior::Dynamic;
         profile.monitors = "1".into();
-        assert_eq!(validate_profile(&profile).unwrap_err(), "err.monitorsNeedMultimon");
+        assert!(validate_profile(&profile).is_ok());
+        assert!(!display_arguments(&profile, Backend::Sdl).iter().any(|a| a.starts_with("/monitors")));
         // Mit Multimon darf die Fenstergröße beliebig sein.
         profile.multimon = true;
         profile.width = 1;
