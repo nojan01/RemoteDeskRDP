@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.5 – 2026-10-09
 
 - Fix: profiles with a saved monitor list but "Multiple monitors" switched off
   failed to connect after 0.7.4 (`err.monitorsNeedMultimon`). The list is now
