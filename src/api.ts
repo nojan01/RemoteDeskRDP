@@ -41,3 +41,5 @@ export const setUpdateMenuLabel = (label: string) =>
   invoke<void>("set_update_menu_label", { label });
 export const activeSessionCount = () => invoke<number>("active_session_count");
 export const restartApplication = () => invoke<void>("restart_application");
+export const checkLocalNetwork = () => invoke<boolean>("check_local_network");
+export const openLocalNetworkSettings = () => invoke<void>("open_local_network_settings");

@@ -42,6 +42,10 @@ export const en: Record<string, string> = {
   "state.vncClosed": "VNC session was closed.",
   "state.connectFailed": "Connection failed: {error}",
   "state.folderTwice": "That folder is already shared",
+  "localNetwork.denied": "RemoteDeskRDP has no access to the local network. Connections to machines on your own network then fail without a clear message. Allow access under System Settings ▸ Privacy & Security ▸ Local Network and check again.",
+  "localNetwork.openSettings": "Open System Settings",
+  "localNetwork.recheck": "Check again",
+  "localNetwork.dismiss": "Dismiss",
   "confirm.delete": "Really delete this connection profile?",
   "confirm.deepLink": "Another app wants to open the connection “{name}”. Connect now?",
   "confirm.deepLinkTrust": "Trust this profile from now on and connect such requests without asking ({name})?",
@@ -217,6 +221,9 @@ export const en: Record<string, string> = {
 
   "help.security.h": "Security",
   "help.security.body": "<p>Credentials belong in the macOS keychain. Certificate changes are shown by default. Never ignore certificates blindly.</p><p>When a profile is deleted, RemoteDeskRDP also removes its passwords from the keychain – both the session one and the gateway one. Nothing orphaned is left behind.</p>",
+
+  "help.localNetwork.h": "Local network (macOS permission)",
+  "help.localNetwork.body": "<p>On the first connection macOS asks whether RemoteDeskRDP may access devices on the local network. Without this permission, connections to machines on your own network fail only with <code>CONNECT_FAILED</code> or “No route to host”, while hosts on the internet or behind a gateway stay reachable. The app checks the permission at startup and after such a failure and shows a notice at the top of the editor with a shortcut to System Settings.</p><p>After an app update the first connection may fail once because macOS re-associates the permission; a second attempt then succeeds. If that does not help, switch the toggle under System Settings ▸ Privacy & Security ▸ Local Network off and on again and restart RemoteDeskRDP. Older entries from deleted test builds in that list are harmless and cannot be removed individually.</p>",
 
   "help.appearance.h": "Appearance and language",
   "help.appearance.body": "<p>At the bottom of the sidebar there are two small switches. The left one cycles the appearance between <b>Auto</b>, <b>Light</b> and <b>Dark</b>, the right one the language between <b>Auto</b>, <b>German</b> and <b>English</b>. In the Auto position the app follows the macOS setting.</p><p>Both apply to the program as a whole rather than per connection, and they survive a restart. The session window itself is drawn by the guest system and is therefore not switched along.</p>",

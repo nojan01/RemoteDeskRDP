@@ -43,6 +43,10 @@ export const de: Record<string, string> = {
   "state.vncClosed": "VNC-Sitzung wurde geschlossen.",
   "state.connectFailed": "Verbindung fehlgeschlagen: {error}",
   "state.folderTwice": "Ordner ist bereits freigegeben",
+  "localNetwork.denied": "RemoteDeskRDP hat keinen Zugriff auf das lokale Netzwerk. Verbindungen zu Rechnern im eigenen Netz schlagen dann ohne klare Meldung fehl. Erlaube den Zugriff unter Systemeinstellungen ▸ Datenschutz & Sicherheit ▸ Lokales Netzwerk und prüfe anschließend erneut.",
+  "localNetwork.openSettings": "Systemeinstellungen öffnen",
+  "localNetwork.recheck": "Erneut prüfen",
+  "localNetwork.dismiss": "Ausblenden",
   "confirm.delete": "Dieses Verbindungsprofil wirklich löschen?",
   "confirm.deepLink": "Eine andere App möchte die Verbindung „{name}“ öffnen. Jetzt verbinden?",
   "confirm.deepLinkTrust": "Diesem Profil künftig vertrauen und solche Aufrufe ohne Rückfrage verbinden ({name})?",
@@ -218,6 +222,9 @@ export const de: Record<string, string> = {
 
   "help.security.h": "Sicherheit",
   "help.security.body": "<p>Zugangsdaten gehören in den macOS-Schlüsselbund. Zertifikatsänderungen werden standardmäßig angezeigt. Nie Zertifikate blind ignorieren.</p><p>Wird ein Profil gelöscht, entfernt RemoteDeskRDP auch dessen Kennwörter aus dem Schlüsselbund – sowohl das der Sitzung als auch das des Gateways. Es bleibt also nichts Verwaistes zurück.</p>",
+
+  "help.localNetwork.h": "Lokales Netzwerk (macOS-Freigabe)",
+  "help.localNetwork.body": "<p>macOS fragt beim ersten Verbindungsaufbau, ob RemoteDeskRDP auf Geräte im lokalen Netzwerk zugreifen darf. Ohne diese Freigabe scheitern Verbindungen zu Rechnern im eigenen Netz nur mit <code>CONNECT_FAILED</code> oder „No route to host“, während Rechner im Internet oder über ein Gateway weiter erreichbar sind. Die App prüft die Freigabe beim Start und nach einem solchen Fehler und zeigt oben im Editor einen Hinweis mit Sprung in die Systemeinstellungen.</p><p>Nach einem App-Update kann die erste Verbindung einmalig fehlschlagen, weil macOS die Freigabe neu zuordnet; ein zweiter Versuch gelingt dann. Hilft das nicht, den Schalter unter Systemeinstellungen ▸ Datenschutz & Sicherheit ▸ Lokales Netzwerk aus- und wieder einschalten und RemoteDeskRDP neu starten. Ältere Einträge gelöschter Testversionen in dieser Liste sind harmlos und lassen sich nicht einzeln entfernen.</p>",
 
   "help.appearance.h": "Erscheinungsbild und Sprache",
   "help.appearance.body": "<p>Unten in der Seitenleiste stehen zwei kleine Schalter. Der linke wechselt das Erscheinungsbild zwischen <b>Auto</b>, <b>Hell</b> und <b>Dunkel</b>, der rechte die Sprache zwischen <b>Auto</b>, <b>Deutsch</b> und <b>Englisch</b>. In der Stellung Auto folgt die App der Einstellung von macOS.</p><p>Beides gilt für das Programm als Ganzes, nicht je Verbindung, und bleibt über einen Neustart hinaus erhalten. Das Sitzungsfenster selbst wird vom Gastsystem gezeichnet und daher nicht mitgeschaltet.</p>",

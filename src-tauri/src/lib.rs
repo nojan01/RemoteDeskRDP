@@ -2570,6 +2570,71 @@ fn restart_application(app: tauri::AppHandle) {
     app.restart();
 }
 
+/// Kleinste gültige mDNS-Anfrage (PTR auf `_services._dns-sd._udp.local`).
+/// Sie geht an die Multicast-Gruppe 224.0.0.251 und zählt für macOS als
+/// Zugriff auf das lokale Netzwerk.
+fn mdns_probe_query() -> Vec<u8> {
+    let mut query = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+    for label in ["_services", "_dns-sd", "_udp", "local"] {
+        query.push(label.len() as u8);
+        query.extend_from_slice(label.as_bytes());
+    }
+    query.extend_from_slice(&[0, 0, 12, 0, 1]);
+    query
+}
+
+#[cfg(target_os = "macos")]
+fn probe_local_network() -> std::io::Result<()> {
+    use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+    socket.set_multicast_ttl_v4(1)?;
+    socket.send_to(&mdns_probe_query(), SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 251), 5353))?;
+    Ok(())
+}
+
+/// Prüft die macOS-Freigabe „Lokales Netzwerk“. Ohne sie scheitert jeder
+/// Zugriff auf lokale Adressen mit EHOSTUNREACH – FreeRDP meldet dann nur
+/// ein nichtssagendes CONNECT_FAILED. Der Versuch stößt zugleich die
+/// Freigabeabfrage an und lässt macOS nach einem Update seinen Zwischenspeicher
+/// erneuern; deshalb wird einige Sekunden lang wiederholt. Andere Fehler
+/// (etwa gar kein Netz) gelten nicht als fehlende Freigabe.
+#[tauri::command(async)]
+fn check_local_network() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        for attempt in 0..8 {
+            match probe_local_network() {
+                Ok(()) => return true,
+                Err(e) if e.raw_os_error() == Some(libc::EHOSTUNREACH) => {
+                    if attempt < 7 {
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                }
+                Err(_) => return true,
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
+/// Öffnet Systemeinstellungen ▸ Datenschutz & Sicherheit ▸ Lokales Netzwerk.
+#[tauri::command(async)]
+fn open_local_network_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("open: {status}"));
+        }
+    }
+    Ok(())
+}
+
 /// Ergänzt das Standardmenü um "Nach Updates suchen …" direkt unter "Über".
 #[cfg(target_os = "macos")]
 fn install_update_menu(app: &tauri::App) -> tauri::Result<()> {
@@ -2624,7 +2689,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, active_session_count, restart_application, list_monitors])
+        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, active_session_count, restart_application, list_monitors, check_local_network, open_local_network_settings])
         .build(tauri::generate_context!())
         .expect("Fehler beim Start von RemoteDeskRDP");
     app.run(|app, event| {
@@ -2643,6 +2708,23 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Die Netz-Probe muss eine formal gueltige mDNS-Anfrage sein, sonst
+    /// verwerfen Router sie womoeglich, bevor macOS den Zugriff bewertet.
+    #[test]
+    fn mdns_probe_is_a_well_formed_ptr_query() {
+        let q = mdns_probe_query();
+        assert_eq!(&q[..12], &[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], "Header: eine Frage, keine Antworten");
+        let mut i = 12;
+        let mut labels = Vec::new();
+        while q[i] != 0 {
+            let len = q[i] as usize;
+            labels.push(std::str::from_utf8(&q[i + 1..=i + len]).unwrap());
+            i += 1 + len;
+        }
+        assert_eq!(labels, ["_services", "_dns-sd", "_udp", "local"]);
+        assert_eq!(&q[i..], &[0, 0, 12, 0, 1], "Typ PTR, Klasse IN");
+    }
 
     /// Deep-Links sind eine Aussenschnittstelle: Was hier durchrutscht, loest
     /// ungewollt eine Verbindung aus. Deshalb eng gepruefte Faelle.

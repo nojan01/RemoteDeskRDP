@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import RFB from "@novnc/novnc";
-import { closeTerminalSession, connectProfile, deleteProfile, forgetGatewayPassword, forgetPassword, listMonitors, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, saveGatewayPassword, savePassword, saveProfile, setUpdateMenuLabel, startVncSession, takePendingLink } from "./api";
+import { checkLocalNetwork, closeTerminalSession, connectProfile, deleteProfile, forgetGatewayPassword, forgetPassword, listMonitors, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, openLocalNetworkSettings, saveGatewayPassword, savePassword, saveProfile, setUpdateMenuLabel, startVncSession, takePendingLink } from "./api";
 import { checkForUpdates, type UpdateReporter } from "./updater";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -21,7 +21,7 @@ type Status = { key: string; name?: string; error?: unknown; params?: Record<str
 /** Reihenfolge der Hilfeabschnitte; die Texte stehen in den Wörterbüchern. */
 const helpSections = [
   "targets", "ports", "vnc", "ssh", "sftp", "mosh", "gateway", "udp", "reconnect", "display", "files", "folders",
-  "limits", "printer", "smartcard", "video", "microphone", "admin", "entra", "multimon", "scaling", "keyboard", "security", "appearance", "dualbeam",
+  "limits", "printer", "smartcard", "video", "microphone", "admin", "entra", "multimon", "scaling", "keyboard", "security", "localNetwork", "appearance", "dualbeam",
 ] as const;
 
 /** Häufige Windows-Tastaturlayouts (KLID). Freie Eingabe bleibt möglich. */
@@ -106,6 +106,8 @@ export function App() {
   const [current, setCurrent] = createSignal<RemoteProfile>(emptyProfile());
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
   const [status, setStatus] = createSignal<Status>({ key: "state.ready" });
+  // true = Freigabe „Lokales Netzwerk“ fehlt; null = ausgeblendet/unbekannt.
+  const [localNetworkDenied, setLocalNetworkDenied] = createSignal<boolean | null>(null);
   const [helpOpen, setHelpOpen] = createSignal(false);
   const [monitors, setMonitors] = createSignal<MonitorInfo[]>([]);
   const [monitorsLoading, setMonitorsLoading] = createSignal(false);
@@ -342,7 +344,12 @@ export function App() {
     await drainLink();
     // FreeRDP scheitert oft erst nach ein bis zwei Sekunden; das Backend
     // meldet solche späten Abbrüche nach, damit nicht „Verbunden“ stehen bleibt.
-    await listen<{ id: string; message: string }>("session-failed", (event) => setStatus({ key: "state.connectFailed", error: event.payload.message }));
+    await listen<{ id: string; message: string }>("session-failed", (event) => {
+      setStatus({ key: "state.connectFailed", error: event.payload.message });
+      // Ein CONNECT_FAILED ist oft nur die fehlende Freigabe „Lokales Netzwerk“.
+      if (event.payload.message.includes("CONNECT_FAILED")) void recheckLocalNetwork();
+    });
+    void recheckLocalNetwork();
 
     // Nur das Hauptfenster kümmert sich um Updates; Terminal- und VNC-Fenster
     // sind oben bereits ausgestiegen.
@@ -350,6 +357,13 @@ export function App() {
     await listen("remotedesk://check-updates", () => void checkForUpdates(true, reportUpdate));
     setTimeout(() => void checkForUpdates(false, reportUpdate), 3000);
   });
+
+  // Die Prüfung stößt zugleich die Systemabfrage an und frischt den
+  // Freigabe-Zwischenspeicher nach einem Update auf; ein Fehlschlag der
+  // Prüfung selbst soll nie eine Warnung auslösen.
+  const recheckLocalNetwork = async () => {
+    try { setLocalNetworkDenied(!(await checkLocalNetwork())); } catch { setLocalNetworkDenied(false); }
+  };
 
   const update = <K extends Field>(field: K, value: RemoteProfile[K]) => {
     setCurrent((profile) => ({ ...profile, [field]: value }));
@@ -469,6 +483,16 @@ export function App() {
       <Show when={isTerminalWindow && ["ssh", "sftp", "mosh"].includes(current().protocol)}><section class="ssh-session"><header><div><span class="eyebrow">{current().protocol.toUpperCase()}</span><h2>{current().name}</h2></div><button class="secondary" onClick={() => void closeSsh()}>{t("ssh.disconnect")}</button></header><div class="ssh-frame"><SshTerminal profile={current()} /></div></section></Show>
       <Show when={vncSession()}>{(session) => <section class="vnc-session"><header><div><span class="eyebrow">VNC</span><h2>{session().profile.name}</h2></div><button class="secondary" onClick={closeVnc}>{t("vnc.disconnect")}</button></header><div class="vnc-frame"><div class="vnc-display" ref={(element) => { vncDisplay = element; }} /><Show when={vncCredentialsNeeded()}><form class="vnc-auth" onSubmit={submitVncCredentials}><h3>{t("vnc.passwordRequired")}</h3><p>{t("vnc.passwordHelp", { name: session().profile.name })}</p><input type="password" value={vncPassword()} onInput={(event) => setVncPassword(event.currentTarget.value)} autofocus /><label class="vnc-save-password"><input type="checkbox" checked={vncSavePassword()} onChange={(event) => setVncSavePassword(event.currentTarget.checked)} />{t("vnc.savePassword")}</label><div><button type="button" class="secondary" onClick={cancelVncCredentials}>{t("vnc.cancel")}</button><button class="connect" type="submit">{t("action.connect")}</button></div></form></Show></div></section>}</Show>
       <div class="editor-scroll" classList={{ hidden: !!vncSession() || isVncWindow || isTerminalWindow }}>
+        <Show when={localNetworkDenied()}>
+            <div class="notice" role="alert">
+              <p>{t("localNetwork.denied")}</p>
+              <div class="notice-actions">
+                <button class="secondary small" onClick={() => void openLocalNetworkSettings().catch(() => {})}>{t("localNetwork.openSettings")}</button>
+                <button class="secondary small" onClick={() => void recheckLocalNetwork()}>{t("localNetwork.recheck")}</button>
+                <button class="secondary small" onClick={() => setLocalNetworkDenied(null)}>{t("localNetwork.dismiss")}</button>
+              </div>
+            </div>
+        </Show>
         <section class="identity-card">
           <div class="field-grid">
             <label class="wide"><span>{t("field.name")}</span><input value={current().name} onInput={(event) => update("name", event.currentTarget.value)} placeholder={t("field.namePlaceholder")} /></label>

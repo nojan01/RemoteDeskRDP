@@ -2,6 +2,15 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- New: RemoteDeskRDP checks the macOS "Local Network" permission at start-up
+  and after a `CONNECT_FAILED` error. If access is denied, a notice with a
+  shortcut to System Settings and a re-check button appears in the editor.
+  The probe also nudges macOS to refresh its permission cache after an app
+  update, which previously made the first connection fail silently.
+- Help: new section "Local network (macOS permission)".
+
 ## 0.7.6 – 2026-10-09
 
 - Fix: RDP connection failures that occur after the initial start-up check
