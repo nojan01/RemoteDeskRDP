@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.4 – 2026-10-09
 
 - Microsoft Entra ID sign-in (`/sec:aad`): the Microsoft login page opens in
   its own window and the authorization code is passed to FreeRDP. SDL backend
