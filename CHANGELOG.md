@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.10 – 2026-10-09
 
 - Der Neustart nach einem Update (und der einmalige Selbst-Neustart nach der LaunchServices-Registrierung) erfolgt auf macOS jetzt über LaunchServices (`open -n`) statt durch direktes Starten des neuen Prozesses aus dem alten heraus. Ein direkt gestarteter Prozess erbt den alten als „verantwortlichen Prozess“, sodass macOS die Freigabe „Lokales Netzwerk“ weiter gegen die alte Build-Kennung prüfte – deshalb scheiterte die erste RDP-Verbindung auch mit 0.7.9 noch, bis die App manuell neu gestartet wurde.
 
