@@ -149,6 +149,9 @@ rm -f "${tarball}" "${tarball}.sig" "${release_dir}/latest.json"
 # Ohne COPYFILE_DISABLE packt tar AppleDouble-Dateien (._*) mit hinein; die
 # entpackte App bestuende dann die Siegelpruefung nicht mehr.
 COPYFILE_DISABLE=1 tar -czf "${tarball}" -C "$(dirname "${app}")" "$(basename "${app}")"
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then
+  echo "Hinweis: TAURI_SIGNING_PRIVATE_KEY_PASSWORD ist leer – der Updater-Schlüssel wird ohne Kennwort geöffnet." >&2
+fi
 (cd "${script_dir}/.." && npx --no-install tauri signer sign \
   -f "${updater_key}" -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "${tarball}" >/dev/null)
 (cd "${script_dir}/.." && node scripts/create-updater-manifest.mjs \

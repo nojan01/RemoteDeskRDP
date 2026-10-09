@@ -48,7 +48,7 @@ Kennung ausgegeben hat (MS-RDPBCGR, `Server Auto-Reconnect Cookie`). Tut er das
 nicht, bleibt der Schalter folgenlos; schaden kann er nicht.
 
 **Häufigste Ursache echter Aussetzer sind angehaltene virtuelle Maschinen.**
-Bei Parallels heisst die Einstellung „Bei Untätigkeit anhalten" (Konfigurieren ▸
+Bei Parallels heißt die Einstellung „Bei Untätigkeit anhalten" (Konfigurieren ▸
 Optionen ▸ Optimierung). Während einer RDP-Sitzung steht das Parallels-Fenster
 nie im Vordergrund, die Maschine gilt daher als untätig und wird eingefroren.
 Gemessen wurde dabei eine TCP-Bilanz ohne jedes Abbausignal der Gegenstelle

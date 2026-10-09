@@ -38,7 +38,7 @@ export type RemoteProfile = {
   printer: boolean;
   smartcard: boolean;
   video: boolean;
-  /** FreeRDPs Wiederverbindung nach kurzem Aussetzer (dort standardmässig aus). */
+  /** FreeRDPs Wiederverbindung nach kurzem Aussetzer (dort standardmäßig aus). */
   autoReconnect: boolean;
   gatewayEnabled: boolean;
   gatewayHost: string;
@@ -56,9 +56,12 @@ export type RemoteProfile = {
   monitors: string;
   keyboardLayout: string;
   timezone: string;
-  /** Leer = ganzer Desktop; sonst RemoteApp mit diesem Programm. */
+  /** @deprecated RemoteApp wurde aus der Oberfläche entfernt; die Felder bleiben,
+   *  damit alte Profile unverändert geladen und gespeichert werden können. */
   remoteAppProgram: string;
+  /** @deprecated Siehe remoteAppProgram. */
   remoteAppCmd: string;
+  /** @deprecated Siehe remoteAppProgram. */
   remoteAppName: string;
   certificateMode: "prompt" | "tofu" | "ignore";
   updatedAt: string;

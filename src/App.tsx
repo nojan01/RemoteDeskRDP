@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import RFB from "@novnc/novnc";
 import { closeTerminalSession, connectProfile, deleteProfile, forgetGatewayPassword, forgetPassword, listMonitors, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, saveGatewayPassword, savePassword, saveProfile, setUpdateMenuLabel, startVncSession, takePendingLink } from "./api";
 import { checkForUpdates, type UpdateReporter } from "./updater";
@@ -75,9 +75,10 @@ function linkFingerprint(profile: RemoteProfile) {
     profile.id, profile.protocol, profile.host, profile.username,
     profile.rdpTcpPort, profile.vncPort, profile.sshPort,
     profile.gatewayEnabled, profile.gatewayHost, profile.gatewayPort,
-    // Ein Link darf nicht unbemerkt ein anderes Programm oder die
-    // Administratorsitzung starten.
-    profile.remoteAppProgram, profile.remoteAppCmd, profile.adminSession, profile.entraId, profile.multimon, profile.monitors,
+    // Ein Link darf nicht unbemerkt die Administratorsitzung, eine andere
+    // Anmeldung oder eine andere Bildschirmaufteilung starten.
+    profile.adminSession, profile.entraId, profile.multimon,
+    profile.monitors.split(",").map((id) => id.trim()).filter(Boolean).join(","),
   ]);
 }
 function readTrustedLinks(): string[] {
@@ -114,14 +115,20 @@ export function App() {
     const key = String(id);
     update("monitors", (ids.includes(key) ? ids.filter((value) => value !== key) : [...ids, key]).join(","));
   };
+  // Ein später Monitor-Scan darf nicht die Liste eines inzwischen gewechselten
+  // Profils überschreiben; beim Profilwechsel wird die Liste verworfen.
+  let monitorGeneration = 0;
+  const resetMonitors = () => { monitorGeneration++; setMonitors([]); setMonitorsLoading(false); };
   const detectMonitors = async () => {
+    const generation = ++monitorGeneration;
     setMonitorsLoading(true);
     try {
-      setMonitors(await listMonitors());
+      const found = await listMonitors();
+      if (generation === monitorGeneration) setMonitors(found);
     } catch (error) {
-      setStatus({ key: "state.monitorsFailed", error });
+      if (generation === monitorGeneration) setStatus({ key: "state.monitorsFailed", error });
     } finally {
-      setMonitorsLoading(false);
+      if (generation === monitorGeneration) setMonitorsLoading(false);
     }
   };
   const [licenseOpen, setLicenseOpen] = createSignal(false);
@@ -135,7 +142,7 @@ export function App() {
   const [vncPassword, setVncPassword] = createSignal("");
   const [vncSavePassword, setVncSavePassword] = createSignal(false);
   let vncDisplay: HTMLDivElement | undefined;
-  let vncRfb: any;
+  let vncRfb: RFB | undefined;
   // Ein später Keychain-Lesevorgang darf nie die Daten eines inzwischen
   // ausgewählten Profils überschreiben.
   let secretLoadGeneration = 0;
@@ -203,7 +210,9 @@ export function App() {
   createEffect(() => {
     const session = vncSession();
     if (!session || !vncDisplay) return;
-    const savedPassword = password();
+    // Das Passwort nur lesen, nicht verfolgen: Eine spätere Eingabe darf die
+    // laufende Sitzung nicht neu aufbauen.
+    const savedPassword = untrack(password);
     const rfb = new RFB(vncDisplay, session.websocketUrl, {
       credentials: savedPassword ? { password: savedPassword } : {},
     });
@@ -211,16 +220,18 @@ export function App() {
     rfb.scaleViewport = true;
     rfb.resizeSession = false;
     rfb.addEventListener("credentialsrequired", () => {
-      if (password()) {
-        rfb.sendCredentials({ password: password() });
+      const known = untrack(password);
+      if (known) {
+        rfb.sendCredentials({ password: known });
       } else {
         setVncPassword("");
         setVncSavePassword(false);
         setVncCredentialsNeeded(true);
       }
     });
-    rfb.addEventListener("disconnect", (event: { detail?: { clean?: boolean } }) => {
-      if (vncRfb === rfb) { vncRfb = undefined; setVncCredentialsNeeded(false); setVncSession(null); if (!event.detail?.clean) setStatus({ key: "state.connectFailed", error: "err.vncDisconnected" }); }
+    rfb.addEventListener("disconnect", (event) => {
+      const clean = Boolean((event.detail as { clean?: boolean } | undefined)?.clean);
+      if (vncRfb === rfb) { vncRfb = undefined; setVncCredentialsNeeded(false); setVncSession(null); if (!clean) setStatus({ key: "state.connectFailed", error: "err.vncDisconnected" }); }
     });
     onCleanup(() => { if (vncRfb === rfb) rfb.disconnect(); });
   });
@@ -247,7 +258,8 @@ export function App() {
     const label = `${profile.protocol}-${labelId(profile.id)}`;
     const existing = await WebviewWindow.getByLabel(label);
     if (existing) { await existing.setFocus(); return; }
-    new WebviewWindow(label, { url: `/?terminal=${encodeURIComponent(profile.id)}`, title: `${profile.name} — RemoteDeskRDP`, width: 1280, height: 820, minWidth: 700, minHeight: 500, resizable: true, center: true });
+    const child = new WebviewWindow(label, { url: `/?terminal=${encodeURIComponent(profile.id)}`, title: `${profile.name} — RemoteDeskRDP`, width: 1280, height: 820, minWidth: 700, minHeight: 500, resizable: true, center: true });
+    await child.once("tauri://error", (event) => setStatus({ key: "state.connectFailed", error: String(event.payload) }));
   };
 
   /** Verbindet ein Profil, das von aussen angefordert wurde (Deep-Link aus
@@ -358,11 +370,13 @@ export function App() {
   const removeFolder = (index: number) =>
     setFolders(current().sharedFolders.filter((_, position) => position !== index));
   const selectProfile = async (profile: RemoteProfile) => {
+    resetMonitors();
     setCurrent(profile); setSelectedId(profile.id); setDirty(false);
     setStatus({ key: "state.profileLoaded" }); await loadSecret(profile.id);
   };
   const newProfile = () => {
     secretLoadGeneration++;
+    resetMonitors();
     const profile = emptyProfile();
     setCurrent(profile); setSelectedId(null); setPassword(""); setGatewayPassword("");
     storedPassword = ""; storedGatewayPassword = "";
@@ -455,15 +469,15 @@ export function App() {
         <section class="identity-card">
           <div class="field-grid">
             <label class="wide"><span>{t("field.name")}</span><input value={current().name} onInput={(event) => update("name", event.currentTarget.value)} placeholder={t("field.namePlaceholder")} /></label>
-            <label><span>{t("field.protocol")}</span><select value={current().protocol} onChange={(event) => update("protocol", event.currentTarget.value as Protocol)}><option value="rdp">{t("protocol.rdp")}</option><option value="vnc">{t("protocol.vnc")}</option><option value="ssh">{t("protocol.ssh")}</option><option value="sftp">{t("protocol.sftp")}</option><option value="mosh">{t("protocol.mosh")}</option></select></label>
+            <label><span>{t("field.protocol")}</span><select value={current().protocol} onChange={(event) => { update("protocol", event.currentTarget.value as Protocol); setPassword(""); setRevealPassword(false); }}><option value="rdp">{t("protocol.rdp")}</option><option value="vnc">{t("protocol.vnc")}</option><option value="ssh">{t("protocol.ssh")}</option><option value="sftp">{t("protocol.sftp")}</option><option value="mosh">{t("protocol.mosh")}</option></select></label>
             <label class="wide"><span>{t("field.host")}</span><input value={current().host} onInput={(event) => update("host", event.currentTarget.value)} placeholder={t("field.hostPlaceholder")} /></label>
-            <Show when={current().protocol !== "vnc"}><label><span>{t("field.username")}</span><input value={current().username} onInput={(event) => update("username", event.currentTarget.value)} placeholder={t("field.optional")} /></label>
+            <Show when={current().protocol !== "vnc"}><label><span>{t("field.username")}</span><input value={current().username} onInput={(event) => update("username", event.currentTarget.value)} placeholder={current().entraId ? t("field.entraIdUser") : t("field.optional")} /></label>
               <Show when={current().protocol === "rdp"}>
-              <label><span>{t("field.domain")}</span><input value={current().domain} onInput={(event) => update("domain", event.currentTarget.value)} placeholder={t("field.optional")} /></label>
-              <label class="wide"><span>{t("field.password")}</span><div class="password-input"><input type={revealPassword() ? "text" : "password"} value={password()} onInput={(event) => setPassword(event.currentTarget.value)} placeholder={t("field.passwordPlaceholder")} /><button type="button" onClick={() => setRevealPassword((value) => !value)}>{revealPassword() ? t("action.hide") : t("action.reveal")}</button><Show when={password()}><button type="button" onClick={() => void clearPassword()}>{t("action.remove")}</button></Show></div><small>{t("field.passwordNote")}</small></label></Show>
+              <label><span>{t("field.domain")}</span><input value={current().domain} disabled={current().entraId} onInput={(event) => update("domain", event.currentTarget.value)} placeholder={t("field.optional")} /></label>
+              <label class="wide"><span>{t("field.password")}</span><div class="password-input"><input type={revealPassword() ? "text" : "password"} value={password()} disabled={current().entraId} onInput={(event) => setPassword(event.currentTarget.value)} placeholder={t("field.passwordPlaceholder")} /><button type="button" disabled={current().entraId} onClick={() => setRevealPassword((value) => !value)}>{revealPassword() ? t("action.hide") : t("action.reveal")}</button><Show when={password()}><button type="button" onClick={() => void clearPassword()}>{t("action.remove")}</button></Show></div><small>{current().entraId ? t("field.entraIdPasswordNote") : t("field.passwordNote")}</small></label></Show>
               </Show>
           </div>
-          <Show when={current().protocol === "rdp"}><div class="identity-toggle"><Toggle label={t("session.entraId")} checked={current().entraId} onChange={(value) => update("entraId", value)} /></div></Show>
+          <Show when={current().protocol === "rdp"}><div class="identity-toggle"><Toggle label={t("session.entraId")} checked={current().entraId} onChange={(value) => update("entraId", value)} /><Show when={current().entraId}><small>{t("session.entraIdNote")}</small></Show></div></Show>
         </section>
 
         <section class="section-card"><div class="section-head"><div><span class="eyebrow">{t("transport.eyebrow")}</span><h2>{t("transport.title")}</h2></div><span class="secure-note">{t("transport.fallback")}</span></div>
@@ -485,7 +499,7 @@ export function App() {
           <Show when={current().gatewayEnabled}>
             <div class="field-grid">
               <label class="wide"><span>{t("gateway.host")}</span><input value={current().gatewayHost} onInput={(event) => update("gatewayHost", event.currentTarget.value)} placeholder="gateway.example.net" /><small>{t("gateway.hostNote")}</small></label>
-              <label><span>{t("gateway.port")}</span><input type="number" min="1" max="65535" value={current().gatewayPort} onInput={(event) => update("gatewayPort", Number(event.currentTarget.value) || 443)} /></label>
+              <Port label={t("gateway.port")} value={current().gatewayPort} onChange={(value) => update("gatewayPort", value)} />
               <label><span>{t("gateway.username")}</span><input value={current().gatewayUsername} onInput={(event) => update("gatewayUsername", event.currentTarget.value)} placeholder={t("gateway.sameAsSession")} /></label>
               <label><span>{t("gateway.domain")}</span><input value={current().gatewayDomain} onInput={(event) => update("gatewayDomain", event.currentTarget.value)} placeholder={t("gateway.sameAsSession")} /></label>
               <label class="wide"><span>{t("gateway.password")}</span><div class="password-input"><input type={revealGatewayPassword() ? "text" : "password"} value={gatewayPassword()} onInput={(event) => setGatewayPassword(event.currentTarget.value)} placeholder={t("gateway.sameAsSession")} /><button type="button" onClick={() => setRevealGatewayPassword((value) => !value)}>{revealGatewayPassword() ? t("action.hide") : t("action.reveal")}</button><Show when={gatewayPassword()}><button type="button" onClick={() => void clearGatewayPassword()}>{t("action.remove")}</button></Show></div><small>{t("gateway.passwordNote")}</small></label>
@@ -519,7 +533,7 @@ export function App() {
           </Show>
           <label class="select-label"><span>{t("display.resize")}</span><select value={current().resizeBehavior} onChange={(event) => update("resizeBehavior", event.currentTarget.value as ResizeBehavior)}>
             <option value="dynamic">{t("display.resize.dynamic")}</option>
-            <option value="scale">{t("display.resize.scale")}</option>
+            <option value="scale" disabled={current().multimon}>{t("display.resize.scale")}</option>
             <option value="fixed">{t("display.resize.fixed")}</option>
           </select></label>
           <label class="select-label"><span>{t("display.depth")}</span><select value={current().colorDepth} onChange={(event) => update("colorDepth", event.currentTarget.value as ColorDepth)}>
@@ -539,7 +553,7 @@ export function App() {
             </select></label>
             <label class="select-label"><span>{t("display.scaleDesktop")}</span><select value={String(current().scaleDesktop)} onChange={(event) => update("scaleDesktop", Number(event.currentTarget.value))}>
               <option value="0">{t("display.scale.auto")}</option>
-              <For each={[100, 125, 150, 175, 200, 250, 300]}>{(value) => <option value={String(value)}>{value} %</option>}</For>
+              <For each={[100, 125, 150, 175, 200, 250, 300, 400, 500]}>{(value) => <option value={String(value)}>{value} %</option>}</For>
             </select></label>
           </div>
           <p>{t("display.depthNote")}</p>

@@ -42,7 +42,7 @@ if (leer.length) fehler.push(`Ohne Text: ${leer.join(", ")}`);
 const gleichErlaubt = new Set([
   "brand.subtitle", "transport.eyebrow", "gateway.eyebrow", "help.eyebrow",
   "unit.port", "unit.px", "help.dualbeam.h",
-  "field.optional", "help.ports.h", "remoteApp.title", "help.remoteapp.h", "locale.eyebrow",
+  "field.optional", "help.ports.h", "locale.eyebrow",
 ]);
 const unuebersetzt = Object.keys(de)
   .filter((k) => k in en && !gleichErlaubt.has(k) && de[k] === en[k]);

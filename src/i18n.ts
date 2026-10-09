@@ -83,7 +83,7 @@ export function errMsg(e: unknown): string {
   let raw: string;
   if (e instanceof Error) raw = e.message;
   else if (typeof e === "string") raw = e;
-  else if (e == null) return String(e);
+  else if (e == null) return "";
   else {
     try { raw = typeof e === "object" ? JSON.stringify(e) : String(e); }
     catch { return String(e); }

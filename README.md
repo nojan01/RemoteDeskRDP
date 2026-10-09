@@ -18,7 +18,10 @@ macOS Keychain; profile files never contain passwords.
 
 - Self-contained RDP client based on a patched FreeRDP build; no Homebrew or
   XQuartz runtime is required for RDP.
-- Integrated VNC viewer and SSH terminal, plus SFTP and optional Mosh support.
+- Integrated VNC viewer (in its own window) and SSH terminal, plus SFTP and
+  optional Mosh support.
+- Microsoft Entra ID sign-in with the Microsoft login page in its own window,
+  and multi-monitor sessions with monitor detection.
 - RD Gateway, dynamic resolution, clipboard and file transfer, folder, printer
   and smartcard redirection, audio and H.264 video acceleration.
 - Drag and drop between Finder and compatible RDP sessions.
@@ -115,12 +118,13 @@ Every profile stores how its session window behaves:
 
 | Setting | Effect |
 |---|---|
-| Fenster | Starts with the configured `width` × `height` (`/size:`) |
-| Nutzbare Bildschirmfläche | Fills the usable screen area (`+workarea`) |
-| Vollbild | Full screen, `⌃⌥⏎` toggles back (`+f`) |
-| Auflösung mitziehen | `+dynamic-resolution`, the server follows the window size |
-| Bild skalieren | `/smart-sizing`, the window is always resizable |
-| Feste Auflösung | Neither option, the window stays fixed |
+| Window (Fenster) | Starts with the configured `width` × `height` (`/size:`) |
+| Usable screen area (Nutzbare Bildschirmfläche) | Fills the usable screen area (`+workarea`) |
+| Full screen (Vollbild) | Full screen, `⌃⌥⏎` toggles back (`+f`) |
+| Follow resolution (Auflösung mitziehen) | `+dynamic-resolution`, the server follows the window size |
+| Scale image (Bild skalieren) | `/smart-sizing`, the window is always resizable; not available with multiple monitors |
+| Fixed resolution (Feste Auflösung) | Neither option, the window stays fixed |
+| Multiple monitors | `/multimon` plus an optional `/monitors:` list; window size, display mode and scaling do not apply |
 
 The colour depth is passed as `/bpp`. FreeRDP only accepts 32, 24, 16, 15 and 8
 bits and rejects anything else, so the profile offers exactly those. Leaving it
@@ -408,4 +412,5 @@ The bundled third-party components and their licences are listed in
 subject to their respective licenses.
 
 The full licence texts ship inside the app bundle under
-`Contents/Resources/resources/freerdp/`.
+`Contents/Resources/resources/freerdp/` (FreeRDP and its libraries) and
+`Contents/Resources/resources/licenses/` (noVNC, xterm.js, portable-pty).

@@ -1,8 +1,8 @@
-// English texts. Keys must mirror de.ts – the test in i18n.test.ts enforces it.
+// English texts. Keys must mirror de.ts – scripts/verify-locales.mjs enforces it.
 
 export const en: Record<string, string> = {
   // ─── Sidebar ────────────────────────────────────────────────────
-  "brand.subtitle": "RDP · VNC · SSH",
+  "brand.subtitle": "RDP · VNC · SSH · SFTP · Mosh",
   "side.connections": "CONNECTIONS",
   "side.notConfigured": "not configured",
   "side.empty": "No saved connections yet.",
@@ -75,9 +75,8 @@ export const en: Record<string, string> = {
   "transport.udpPreferred": "Prefer UDP",
   "transport.autoReconnect": "Reconnect",
   "transport.note": "UDP is used automatically when the target server and the firewall allow it. Direct FreeRDP connections use the same target port as RDP TCP; if the port values differ, the TCP port applies. Otherwise the session stays on TCP.",
-  "vnc.note": "The VNC session is shown directly in RemoteDeskRDP. Its password is requested when connecting and is not stored in the profile.",
+  "vnc.note": "The VNC session opens in its own RemoteDeskRDP window. Its password is requested when connecting and is not stored in the profile.",
   "vnc.disconnect": "Close VNC session",
-  "vnc.passwordPrompt": "VNC password for {name}:",
   "vnc.passwordRequired": "VNC password required",
   "vnc.passwordHelp": "Enter the password for {name}.",
   "vnc.cancel": "Cancel",
@@ -175,12 +174,12 @@ export const en: Record<string, string> = {
   "help.close": "Close",
 
   "help.targets.h": "Supported targets",
-  "help.targets.body": "<p><b>Windows</b> over RDP or VNC; <b>Linux</b> over RDP with xrdp or VNC; <b>macOS</b> through Screen Sharing over VNC. RemoteDeskRDP shows VNC sessions directly in the app window.</p>",
+  "help.targets.body": "<p><b>Windows</b> over RDP or VNC; <b>Linux</b> over RDP with xrdp or VNC; <b>macOS</b> through Screen Sharing over VNC. RemoteDeskRDP opens VNC sessions in a window of their own.</p>",
 
   "help.ports.h": "Ports",
   "help.ports.body": "<p>RDP TCP and UDP: 3389. Both values can be adjusted per profile.</p>",
   "help.vnc.h": "VNC session",
-  "help.vnc.body": "<p>VNC is shown directly in the RemoteDeskRDP window. The integrated viewer speaks standard RFB and therefore works with common VNC servers, including TightVNC, without a server-specific path. The default port is 5900. The password is requested only while connecting and is not stored in the profile. The connection between the display and the app uses a short-lived loopback connection only. RDP options such as gateway, redirected drives or dynamic resolution intentionally stay hidden for VNC.</p>",
+  "help.vnc.body": "<p>VNC opens in its own RemoteDeskRDP window; the main window stays free for managing profiles. The integrated viewer speaks standard RFB and therefore works with common VNC servers, including TightVNC, without a server-specific path. The default port is 5900. The password is requested only while connecting and is not stored in the profile. The connection between the display and the app uses a short-lived loopback connection only. RDP options such as gateway, redirected drives or dynamic resolution intentionally stay hidden for VNC.</p>",
   "help.ssh.h": "SSH terminal",
   "help.ssh.body": "<p>SSH opens an interactive terminal in its own RemoteDeskRDP window. The app uses the macOS system client <code>/usr/bin/ssh</code> with a pseudo-terminal, so password, key and host-key prompts appear directly in the terminal. The default port is 22. Keep the user name, port and terminal type in the profile. The terminal type is passed to the server as <code>TERM</code>; <code>xterm-256color</code> is the suitable default for the embedded terminal.</p><p>The optional X11 setting enables <code>-X</code>. It only applies to graphical Linux/Unix applications, not Windows programs. It requires <b>XQuartz</b> on the Mac; RemoteDeskRDP starts it when connecting and passes its display to SSH. A saved Linux command such as <code>gedit</code> or <code>xterm -e htop</code> starts automatically and opens in an XQuartz window on the Mac.</p>",
   "help.sftp.h": "SFTP/SCP file terminal",
@@ -223,7 +222,7 @@ export const en: Record<string, string> = {
   "help.appearance.body": "<p>At the bottom of the sidebar there are two small switches. The left one cycles the appearance between <b>Auto</b>, <b>Light</b> and <b>Dark</b>, the right one the language between <b>Auto</b>, <b>German</b> and <b>English</b>. In the Auto position the app follows the macOS setting.</p><p>Both apply to the program as a whole rather than per connection, and they survive a restart. The session window itself is drawn by the guest system and is therefore not switched along.</p>",
 
   "help.dualbeam.h": "DualBeam",
-  "help.dualbeam.body": "<p>RemoteDeskRDP is a standalone app and will accept versioned profile calls from DualBeam. That keeps the integration possible without a fixed plugin API.</p>",
+  "help.dualbeam.body": "<p>RemoteDeskRDP is a standalone app and accepts versioned profile calls from DualBeam. That keeps the integration possible without a fixed plugin API.</p><p>Like DualBeam, the app updates itself: it checks for a new release on launch, and <b>RemoteDeskRDP ▸ Check for Updates…</b> in the menu runs the check at any time. Open sessions are confirmed before a restart.</p>",
 
   // ─── License ────────────────────────────────────────────────────
   "side.license": "§ License",
@@ -276,7 +275,7 @@ export const en: Record<string, string> = {
   "license.source.body":
     "<p>The libraries under the <b>GNU LGPL 2.1</b> (FFmpeg, libusb) and <b>fdk-aac</b> carry an obligation to make the corresponding source code available. All of these libraries ship as separate, dynamically loaded files inside the application bundle and can be replaced there.</p>" +
     "<p>The source code of all third-party components is available unchanged from the respective projects; the versions used are named above. On request the author will supply the sources used free of charge.</p>" +
-    "<p>The full licence texts ship with the program. You will find them inside the application bundle under <code>RemoteDeskRDP.app/Contents/Resources/resources/freerdp/</code> – FreeRDP's Apache-2.0 licence as <code>FREERDP-LICENSE.txt</code>, all others in the <code>licenses/</code> subfolder. That folder also contains the MPL-2.0 licence for noVNC and the MIT licence texts for xterm.js and portable-pty.</p>",
+    "<p>The full licence texts ship with the program. You will find them inside the application bundle under <code>RemoteDeskRDP.app/Contents/Resources/resources/freerdp/</code> – FreeRDP's Apache-2.0 licence as <code>FREERDP-LICENSE.txt</code>, those of the bundled libraries in the <code>licenses/</code> subfolder. The MPL-2.0 licence for noVNC and the MIT licence texts for xterm.js and portable-pty sit alongside under <code>resources/licenses/</code>.</p>",
 
   "license.freerdp.h": "Modified files in FreeRDP and SDL",
   "license.freerdp.body":
@@ -302,6 +301,7 @@ export const en: Record<string, string> = {
   // ─── Backend error messages ─────────────────────────────────────
   "err.profileNeedsIdAndName": "A profile needs an ID and a name.",
   "err.hostRequired": "Please enter a valid host name or IP address.",
+  "err.hostColon": "Enter the port in the Port field, not after the host name.",
   "err.portRange": "Ports must be between 1 and 65535.",
   "err.windowTooSmall": "The window size must be at least 640 × 480 pixels.",
   "err.oddDimensions": "Width and height must be even numbers.",
@@ -318,6 +318,7 @@ export const en: Record<string, string> = {
   "err.profileDirectory": "Profile folder: {0}",
   "err.profileFileUnreadable": "Could not read the profile file: {0}",
   "err.profileFileInvalid": "Invalid profile file: {0}",
+  "err.profileWriteNoTempFile": "Profile file could not be written: no free temporary file in the profile folder.",
   "err.profileWrite": "Could not write the profile file: {0}",
   "err.profileLock": "The profile file is currently locked.",
   "err.argumentLineBreak": "This field must not contain a line break.",
@@ -332,7 +333,6 @@ export const en: Record<string, string> = {
   "err.vncProxyStart": "Could not start the local VNC proxy: {0}",
   "err.vncEmbeddedOnly": "VNC sessions open inside RemoteDeskRDP.",
   "err.vncDisconnected": "The VNC connection was disconnected.",
-  "err.sshProfileRequired": "This function is only available for SSH profiles.",
   "err.sshStart": "Could not start the SSH session: {0}",
   "err.sshNotRunning": "No SSH session is running for this profile.",
   "err.sshAlreadyRunning": "An SSH session is already running for this profile.",
@@ -383,16 +383,22 @@ export const en: Record<string, string> = {
   "session.microphone": "Redirect microphone",
   "state.monitorsFailed": "Could not detect monitors: {error}",
   "session.entraId": "Sign in with Microsoft Entra ID",
+  "session.entraIdNote": "User name as name@company.com; domain and password are not used. Sign-in in the browser window must complete within five minutes.",
+  "field.entraIdUser": "name@company.com",
+  "field.entraIdPasswordNote": "With Entra ID no password is transmitted – you sign in through the Microsoft window.",
   "display.multimon": "Use multiple monitors",
   "display.monitors": "Monitors",
   "display.monitorsAll": "All monitors",
   "display.detectMonitors": "Detect monitors",
   "display.multimonNote": "The session spans the selected monitors, one borderless full-screen window per monitor. Leave empty for all monitors, otherwise enter comma-separated IDs (e.g. 1,3). Window size, display mode and scaling do not apply.",
   "help.entra.h": "Sign in with Microsoft Entra ID",
-  "help.entra.body": "<p>Signs in with an Entra ID account (formerly Azure AD), for example on Entra-joined Windows machines or Azure Virtual Desktop. RemoteDeskRDP opens the Microsoft sign-in page in its own window, where MFA, passkeys and conditional access policies apply. After signing in the window closes and the session starts.</p><ul><li>Enter the user name as <b>name@company.com</b> and leave the domain empty.</li><li>The target machine must allow <i>remote desktop connections with web account sign-in</i>.</li><li>Closing the sign-in window cancels the connection.</li><li>Not available with the MacFreeRDP backend.</li></ul>",
+  "help.entra.body": "<p>Signs in with an Entra ID account (formerly Azure AD), for example on Entra-joined Windows machines or Azure Virtual Desktop. RemoteDeskRDP opens the Microsoft sign-in page in its own window, where MFA, passkeys and conditional access policies apply. After signing in the window closes and the session starts.</p><ul><li>Enter the user name as <b>name@company.com</b> (required); domain and password are ignored – the password is never passed to the client.</li><li>Sign-in must complete within five minutes, otherwise the connection attempt is cancelled.</li><li>The target machine must allow <i>remote desktop connections with web account sign-in</i>.</li><li>Closing the sign-in window cancels the connection.</li><li>Not available with the MacFreeRDP backend.</li></ul>",
   "help.multimon.h": "Multiple monitors",
-  "help.multimon.body": "<p>Spreads the session across several monitors; Windows sees each monitor separately. <b>Detect monitors</b> shows the available IDs, a click selects or deselects them. Without a selection all monitors are used.</p><p>The IDs come from macOS and are not numbered consecutively from 0. Detect them again when the monitor arrangement changes. Not available with the MacFreeRDP backend.</p>",
+  "help.multimon.body": "<p>Spreads the session across several monitors; Windows sees each monitor separately. <b>Detect monitors</b> shows the available IDs, a click selects or deselects them. Without a selection all monitors are used; a monitor list is only allowed together with this switch.</p><p>Window size, display mode and “Scale image” do not apply in multi-monitor mode; the resolution follows the monitors.</p><p>The IDs come from macOS and are not numbered consecutively from 0. Detect them again when the monitor arrangement changes. Not available with the MacFreeRDP backend.</p>",
   "err.monitorsInvalid": "Enter monitors as comma-separated IDs, e.g. 1,3.",
+  "err.monitorsNeedMultimon": "A monitor list is only possible together with “Multiple monitors”.",
+  "err.multimonScale": "“Scale image” is not available in multi-monitor mode.",
+  "err.entraIdUsername": "For Entra ID, enter the user name as name@company.com.",
   "err.multimonBackend": "The MacFreeRDP backend does not support multiple monitors.",
   "err.entraIdBackend": "The MacFreeRDP backend does not support Entra ID sign-in.",
   "err.entraIdChannel": "Could not set up the channel for Entra ID sign-in: {0}",
@@ -405,7 +411,7 @@ export const en: Record<string, string> = {
   "help.scaling.h": "Scaling",
   "help.scaling.body": "<p>“Desktop” (100–500 %) corresponds to the Windows setting “Scale and layout”. “Device” (100, 140, 180 %) reports the pixel density. Older servers ignore both.</p>",
   "help.keyboard.h": "Keyboard and time zone",
-  "help.keyboard.body": "<p>Without a value, FreeRDP uses the Mac's layout and time zone. A specific layout helps when special characters arrive wrong. <code>sdl-freerdp /list:timezones</code> prints all time zones.</p>",
+  "help.keyboard.body": "<p>Without a value, FreeRDP uses the Mac's layout and time zone. A specific layout helps when special characters arrive wrong. The layout is given as a Windows identifier (KLID, e.g. <code>0x409</code> for US English) or by name, the time zone as a Windows time-zone name such as <code>W. Europe Standard Time</code>. <code>sdl-freerdp /list:kbd</code> and <code>/list:timezones</code> print the lists.</p>",
   "err.listValueInvalid": "The keyboard layout must not contain commas or quotes.",
   "err.scaleInvalid": "Device scaling must be 100, 140 or 180 %.",
   "err.scaleDesktopInvalid": "Desktop scaling must be between 100 and 500 %.",

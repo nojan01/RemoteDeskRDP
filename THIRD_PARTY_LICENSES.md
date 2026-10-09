@@ -5,7 +5,8 @@ vollständige Lizenztext des Projekts. Alle Texte liegen dem Programm bei, im
 Programmpaket unter
 `RemoteDeskRDP.app/Contents/Resources/resources/freerdp/` — die Apache-2.0-Lizenz
 von FreeRDP als `FREERDP-LICENSE.txt`, die übrigen dreizehn im Unterordner
-`licenses/`.
+`licenses/`. Die Lizenzen von noVNC, xterm.js und portable-pty liegen daneben
+unter `resources/licenses/`.
 
 ## Übersicht
 
@@ -32,11 +33,19 @@ Die aus FreeRDP entstehenden Einzelbibliotheken sind `libfreerdp3`,
 
 | Komponente | Lizenz |
 |---|---|
-| Tauri 2, `tauri-plugin-dialog`, `tauri-plugin-deep-link` | MIT oder Apache-2.0 |
-| `serde`, `serde_json`, `dirs`, `security-framework` | MIT oder Apache-2.0 |
-| `reqwest`, `chrono`, `hmac`, `sha2`, `hex`, `quick-xml` | MIT oder Apache-2.0 |
+| Tauri 2, `tauri-plugin-dialog`, `tauri-plugin-deep-link`, `tauri-plugin-updater` | MIT oder Apache-2.0 |
+| `serde`, `serde_json`, `dirs`, `chrono`, `libc`, `security-framework` | MIT oder Apache-2.0 |
+| `tokio`, `tokio-tungstenite`, `futures-util` | MIT |
+| `portable-pty` (Pseudoterminal für SSH und Entra ID) | MIT |
+| `objc2`, `objc2-app-kit` | MIT |
+| noVNC (eingebetteter VNC-Viewer) | **MPL-2.0** |
+| xterm.js, `@xterm/addon-fit` (eingebettetes Terminal) | MIT |
 | SolidJS, Vite | MIT |
 | TypeScript | Apache-2.0 |
+
+noVNC steht unter der Mozilla Public License 2.0: Änderungen an noVNC-Dateien
+selbst müssten unter derselben Lizenz offengelegt werden. RemoteDeskRDP bindet
+noVNC unverändert ein; die Lizenz liegt als `noVNC-LICENSE.txt` bei.
 
 ## Punkte, die Beachtung verlangen
 
@@ -76,7 +85,7 @@ Urheberrechtslizenz. Die Lizenz nennt dafür Via Licensing oder die
 Patentinhaber unmittelbar. Ebenfalls gefordert: Der vollständige Quelltext von
 fdk-aac muss Empfängern der Binärfassung kostenfrei zugänglich sein.
 
-**Wozu RemoteDeskRDP AAC verwendet.** Ausschliesslich für den Tonkanal einer
+**Wozu RemoteDeskRDP AAC verwendet.** Ausschließlich für den Tonkanal einer
 laufenden Sitzung (`rdpsnd`), nicht zum Erzeugen oder Weitergeben von
 Audiodateien. Gemessen an zwei Gegenstellen:
 

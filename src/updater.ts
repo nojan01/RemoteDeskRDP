@@ -29,12 +29,12 @@ export async function checkForUpdates(interactive = false, report: UpdateReporte
     }
     report(null);
     const question = `${t("update.available", { version: update.version, current: update.currentVersion })}\n\n${t("update.question")}`;
-    if (!(await confirmDialog(question))) return;
+    if (!(await confirmDialog(question))) { await update.close().catch(() => {}); return; }
 
     // SSH- und VNC-Sitzungen laufen im Prozess, RDP-Sitzungen werden beim
     // Neustart beendet – das darf nicht unangekündigt passieren.
     const open = await activeSessionCount().catch(() => 0);
-    if (open > 0 && !(await confirmDialog(t("update.sessionsOpen", { count: open })))) return;
+    if (open > 0 && !(await confirmDialog(t("update.sessionsOpen", { count: open })))) { await update.close().catch(() => {}); return; }
 
     let total = 0;
     let loaded = 0;

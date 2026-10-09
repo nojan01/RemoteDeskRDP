@@ -10,6 +10,11 @@ All notable changes to RemoteDeskRDP are documented here.
 - Multiple monitors (`/multimon`, `/monitors`) with monitor detection in the
   profile editor. SDL backend only; not yet tested on real multi-monitor
   setups.
+- Code review follow-up: stricter profile validation (host with port suffix,
+  Entra ID user name, monitor list and scaling in multi-monitor mode), safer
+  session bookkeeping and log files, launcher plist fixes, typed noVNC
+  bindings, updater resources released on decline, and refreshed help texts
+  for Entra ID, multiple monitors, keyboard layout and the updater.
 
 ## 0.7.3 – 2026-10-09
 
