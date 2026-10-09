@@ -2567,6 +2567,10 @@ fn restart_application(app: tauri::AppHandle) {
     // Der FreeRDP-Prozess stammt aus dem gerade ersetzten Bundle; deshalb
     // wird auch er beendet.
     terminate_sessions(&app);
+    // Das neue Bundle muss registriert sein, bevor der neue Prozess startet;
+    // sonst stuft nehelper ihn noch mit der alten UUID ein.
+    #[cfg(target_os = "macos")]
+    register_installed_bundle();
     app.restart();
 }
 
@@ -2694,27 +2698,64 @@ fn bundle_path(exe: &Path) -> Option<PathBuf> {
 /// Binary. Nach einem In-Place-Update kennt nehelper noch die UUID des alten
 /// Builds und lehnt den neuen still ab, bis LaunchServices eine
 /// „App installiert“-Meldung schickt. `lsregister -f -R` löst genau diese aus.
+///
+/// Liefert `true`, wenn jetzt registriert wurde. Der laufende Prozess ist
+/// dann bei nehelper bereits mit der alten Zuordnung bekannt; erst ein
+/// Neustart übernimmt die neue.
 #[cfg(target_os = "macos")]
-fn refresh_launch_services_registration(version: &str) {
-    let Ok(exe) = std::env::current_exe() else { return };
-    let Some(bundle) = bundle_path(&exe) else { return };
-    let Ok(dir) = config_dir() else { return };
+fn refresh_launch_services_registration(version: &str) -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let Some(bundle) = bundle_path(&exe) else { return false };
+    let Ok(dir) = config_dir() else { return false };
     let marker = dir.join(REGISTERED_VERSION_FILE);
-    let fingerprint = format!("{version}\n{}\n", bundle.display());
+    let fingerprint = registration_fingerprint(version, &bundle);
     if fs::read_to_string(&marker).is_ok_and(|previous| previous == fingerprint) {
-        return;
+        return false;
     }
+    register_bundle(&bundle, &fingerprint)
+}
+
+#[cfg(target_os = "macos")]
+fn registration_fingerprint(version: &str, bundle: &Path) -> String {
+    format!("{version}\n{}\n", bundle.display())
+}
+
+/// Führt `lsregister -f -R` aus und merkt sich bei Erfolg den Fingerabdruck.
+#[cfg(target_os = "macos")]
+fn register_bundle(bundle: &Path, fingerprint: &str) -> bool {
     let ok = Command::new(LSREGISTER)
         .args(["-f", "-R"])
-        .arg(&bundle)
+        .arg(bundle)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success());
     if ok {
-        let _ = fs::create_dir_all(&dir);
-        let _ = fs::write(&marker, fingerprint);
+        if let Ok(dir) = config_dir() {
+            let _ = fs::create_dir_all(&dir);
+            let _ = fs::write(dir.join(REGISTERED_VERSION_FILE), fingerprint);
+        }
     }
+    ok
+}
+
+/// Registriert das gerade per Update ersetzte Bundle, bevor es neu startet.
+/// Die Version stammt aus der neuen Info.plist, nicht aus dem laufenden
+/// (alten) Prozess.
+#[cfg(target_os = "macos")]
+fn register_installed_bundle() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Some(bundle) = bundle_path(&exe) else { return };
+    let version = Command::new("defaults")
+        .arg("read")
+        .arg(bundle.join("Contents/Info.plist"))
+        .arg("CFBundleShortVersionString")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default();
+    register_bundle(&bundle, &registration_fingerprint(&version, &bundle));
 }
 
 /// Ergänzt das Standardmenü um "Nach Updates suchen …" direkt unter "Über".
@@ -2753,7 +2794,14 @@ pub fn run() {
             {
                 install_update_menu(app)?;
                 let version = app.package_info().version.to_string();
-                std::thread::spawn(move || refresh_launch_services_registration(&version));
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    // Erst der neu gestartete Prozess wird von nehelper mit
+                    // der frisch registrierten UUID eingestuft.
+                    if refresh_launch_services_registration(&version) {
+                        handle.restart();
+                    }
+                });
             }
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
