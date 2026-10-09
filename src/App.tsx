@@ -1,11 +1,11 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import RFB from "@novnc/novnc";
-import { closeTerminalSession, connectProfile, deleteProfile, forgetGatewayPassword, forgetPassword, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, saveGatewayPassword, savePassword, saveProfile, setUpdateMenuLabel, startVncSession, takePendingLink } from "./api";
+import { closeTerminalSession, connectProfile, deleteProfile, forgetGatewayPassword, forgetPassword, listMonitors, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, saveGatewayPassword, savePassword, saveProfile, setUpdateMenuLabel, startVncSession, takePendingLink } from "./api";
 import { checkForUpdates, type UpdateReporter } from "./updater";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
-import { emptyProfile, resolutionPresets, type ColorDepth, type DisplayMode, type Protocol, type RemoteProfile, type ResizeBehavior, type SharedFolder } from "./types";
+import { emptyProfile, resolutionPresets, type ColorDepth, type DisplayMode, type MonitorInfo, type Protocol, type RemoteProfile, type ResizeBehavior, type SharedFolder } from "./types";
 import { cycleLangMode, errMsg, getLangMode, langIcon, t } from "./i18n";
 import { cycleThemeMode, getThemeMode, themeIcon } from "./theme";
 import { SshTerminal } from "./SshTerminal";
@@ -21,7 +21,7 @@ type Status = { key: string; name?: string; error?: unknown; params?: Record<str
 /** Reihenfolge der Hilfeabschnitte; die Texte stehen in den Wörterbüchern. */
 const helpSections = [
   "targets", "ports", "vnc", "ssh", "sftp", "mosh", "gateway", "udp", "reconnect", "display", "files", "folders",
-  "limits", "printer", "smartcard", "video", "microphone", "admin", "scaling", "keyboard", "security", "appearance", "dualbeam",
+  "limits", "printer", "smartcard", "video", "microphone", "admin", "entra", "multimon", "scaling", "keyboard", "security", "appearance", "dualbeam",
 ] as const;
 
 /** Häufige Windows-Tastaturlayouts (KLID). Freie Eingabe bleibt möglich. */
@@ -77,7 +77,7 @@ function linkFingerprint(profile: RemoteProfile) {
     profile.gatewayEnabled, profile.gatewayHost, profile.gatewayPort,
     // Ein Link darf nicht unbemerkt ein anderes Programm oder die
     // Administratorsitzung starten.
-    profile.remoteAppProgram, profile.remoteAppCmd, profile.adminSession,
+    profile.remoteAppProgram, profile.remoteAppCmd, profile.adminSession, profile.entraId, profile.multimon, profile.monitors,
   ]);
 }
 function readTrustedLinks(): string[] {
@@ -106,6 +106,24 @@ export function App() {
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
   const [status, setStatus] = createSignal<Status>({ key: "state.ready" });
   const [helpOpen, setHelpOpen] = createSignal(false);
+  const [monitors, setMonitors] = createSignal<MonitorInfo[]>([]);
+  const [monitorsLoading, setMonitorsLoading] = createSignal(false);
+  const selectedMonitorIds = () => current().monitors.split(",").map((id) => id.trim()).filter(Boolean);
+  const toggleMonitor = (id: number) => {
+    const ids = selectedMonitorIds();
+    const key = String(id);
+    update("monitors", (ids.includes(key) ? ids.filter((value) => value !== key) : [...ids, key]).join(","));
+  };
+  const detectMonitors = async () => {
+    setMonitorsLoading(true);
+    try {
+      setMonitors(await listMonitors());
+    } catch (error) {
+      setStatus({ key: "state.monitorsFailed", error });
+    } finally {
+      setMonitorsLoading(false);
+    }
+  };
   const [licenseOpen, setLicenseOpen] = createSignal(false);
   const [dirty, setDirty] = createSignal(false);
   const [password, setPassword] = createSignal("");
@@ -476,6 +494,15 @@ export function App() {
         </section></Show>
 
         <Show when={current().protocol === "rdp"}><section class="section-card"><div class="section-head"><div><span class="eyebrow">{t("display.eyebrow")}</span><h2>{t("display.title")}</h2></div></div>
+          <div class="toggle-grid"><Toggle label={t("display.multimon")} checked={current().multimon} onChange={(value) => update("multimon", value)} /></div>
+          <Show when={current().multimon}>
+            <label><span>{t("display.monitors")}</span><div class="password-input"><input value={current().monitors} onInput={(event) => update("monitors", event.currentTarget.value)} placeholder={t("display.monitorsAll")} /><button type="button" disabled={monitorsLoading()} onClick={() => void detectMonitors()}>{t("display.detectMonitors")}</button></div></label>
+            <Show when={monitors().length > 0}>
+              <div class="preset-row"><For each={monitors()}>{(monitor) => <button type="button" classList={{ preset: true, active: selectedMonitorIds().includes(String(monitor.id)) }} onClick={() => toggleMonitor(monitor.id)} title={`${monitor.width}×${monitor.height} @ ${monitor.x},${monitor.y}`}>{`${monitor.id}: ${monitor.name}${monitor.primary ? " ★" : ""}`}</button>}</For></div>
+            </Show>
+            <p>{t("display.multimonNote")}</p>
+          </Show>
+          <Show when={!current().multimon}>
           <label class="select-label"><span>{t("display.mode")}</span><select value={current().displayMode} onChange={(event) => update("displayMode", event.currentTarget.value as DisplayMode)}>
             <option value="window">{t("display.mode.window")}</option>
             <option value="workarea">{t("display.mode.workarea")}</option>
@@ -487,6 +514,7 @@ export function App() {
               <Pixels label={t("display.height")} value={current().height} onChange={(value) => update("height", value)} />
             </div>
             <div class="preset-row"><For each={resolutionPresets}>{(preset) => <button type="button" classList={{ preset: true, active: current().width === preset.width && current().height === preset.height }} onClick={() => { update("width", preset.width); update("height", preset.height); }}>{preset.label}</button>}</For></div>
+          </Show>
           </Show>
           <label class="select-label"><span>{t("display.resize")}</span><select value={current().resizeBehavior} onChange={(event) => update("resizeBehavior", event.currentTarget.value as ResizeBehavior)}>
             <option value="dynamic">{t("display.resize.dynamic")}</option>
@@ -529,7 +557,7 @@ export function App() {
         </section></Show>
 
         <Show when={current().protocol === "rdp"}><section class="section-card"><div class="section-head"><div><span class="eyebrow">{t("session.eyebrow")}</span><h2>{t("session.title")}</h2></div><span class="keychain">{t("session.keychain")}</span></div>
-          <div class="toggle-grid"><Toggle label={t("session.clipboard")} checked={current().clipboard} onChange={(value) => update("clipboard", value)} /><Toggle label={t("session.audio")} checked={current().audio} onChange={(value) => update("audio", value)} /><Toggle label={t("session.printer")} checked={current().printer} onChange={(value) => update("printer", value)} /><Toggle label={t("session.smartcard")} checked={current().smartcard} onChange={(value) => update("smartcard", value)} /><Toggle label={t("session.video")} checked={current().video} onChange={(value) => update("video", value)} /><Toggle label={t("session.microphone")} checked={current().microphone} onChange={(value) => update("microphone", value)} /><Toggle label={t("session.admin")} checked={current().adminSession} onChange={(value) => update("adminSession", value)} /></div>
+          <div class="toggle-grid"><Toggle label={t("session.clipboard")} checked={current().clipboard} onChange={(value) => update("clipboard", value)} /><Toggle label={t("session.audio")} checked={current().audio} onChange={(value) => update("audio", value)} /><Toggle label={t("session.printer")} checked={current().printer} onChange={(value) => update("printer", value)} /><Toggle label={t("session.smartcard")} checked={current().smartcard} onChange={(value) => update("smartcard", value)} /><Toggle label={t("session.video")} checked={current().video} onChange={(value) => update("video", value)} /><Toggle label={t("session.microphone")} checked={current().microphone} onChange={(value) => update("microphone", value)} /><Toggle label={t("session.admin")} checked={current().adminSession} onChange={(value) => update("adminSession", value)} /><Toggle label={t("session.entraId")} checked={current().entraId} onChange={(value) => update("entraId", value)} /></div>
           <div class="shares">
             <div class="shares-head"><span>{t("session.shares")}</span><button class="secondary small" onClick={addFolder}>{t("session.addFolder")}</button></div>
             <Show when={current().sharedFolders.length > 0} fallback={<p class="shares-empty">{t("session.noShares")}</p>}>

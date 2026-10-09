@@ -159,6 +159,16 @@ struct RemoteProfile {
     /// Verbindet zur Konsolen- bzw. Administratorsitzung (`+admin`).
     #[serde(default)]
     admin_session: bool,
+    /// Anmeldung über Microsoft Entra ID (`/sec:aad`). Die Anmeldeseite
+    /// öffnet RemoteDeskRDP in einem eigenen Fenster.
+    #[serde(default)]
+    entra_id: bool,
+    /// Sitzung über mehrere Monitore (`/multimon`).
+    #[serde(default)]
+    multimon: bool,
+    /// Kommagetrennte Monitorkennungen für `/monitors:`; leer = alle.
+    #[serde(default)]
+    monitors: String,
     /// Tastaturlayout als Hex-Kennung (z. B. 0x00000407) oder Name.
     #[serde(default)]
     keyboard_layout: String,
@@ -477,6 +487,13 @@ fn validate_rdp_extras(profile: &RemoteProfile) -> Result<(), String> {
         return Err("err.scaleDesktopInvalid".into());
     }
     ensure_list_value(profile.keyboard_layout.trim())?;
+    let monitors = profile.monitors.trim();
+    if !monitors.is_empty()
+        && (monitors.len() > 64
+            || !monitors.split(',').all(|id| !id.is_empty() && id.len() <= 10 && id.bytes().all(|b| b.is_ascii_digit())))
+    {
+        return Err("err.monitorsInvalid".into());
+    }
     let timezone = profile.timezone.trim();
     ensure_single_line(timezone)?;
     if timezone.len() > 128 || timezone.starts_with('-') {
@@ -758,6 +775,98 @@ fn rdp_executable(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .ok_or_else(|| "err.backendMissing".into())
 }
 
+/// Ein Monitor, wie ihn der SDL-Client mit `/list:monitor` meldet.
+#[derive(Debug, Serialize, PartialEq)]
+struct MonitorInfo {
+    id: u32,
+    name: String,
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    primary: bool,
+}
+
+/// Liest Zeilen der Form `     * [1] [Name] 3440x1440\t+0+0`
+/// (sdl_monitor.cpp). Der Stern markiert den Hauptmonitor.
+fn parse_monitor_list(output: &str) -> Vec<MonitorInfo> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (primary, rest) = match line.strip_prefix('*') {
+                Some(rest) => (true, rest.trim_start()),
+                None => (false, line),
+            };
+            let rest = rest.strip_prefix('[')?;
+            let (id, rest) = rest.split_once(']')?;
+            let id = id.trim().parse().ok()?;
+            let rest = rest.trim_start().strip_prefix('[')?;
+            let (name, rest) = rest.rsplit_once(']')?;
+            let (size, position) = rest.trim().split_once(char::is_whitespace)?;
+            let (width, height) = size.split_once('x')?;
+            let position = position.trim().strip_prefix('+')?;
+            let split = position.char_indices().skip(1).find(|(_, c)| *c == '+' || *c == '-')?.0;
+            let (x, y) = position.split_at(split);
+            Some(MonitorInfo {
+                id,
+                name: name.to_string(),
+                width: width.parse().ok()?,
+                height: height.parse().ok()?,
+                x: x.parse().ok()?,
+                y: y.trim_start_matches('+').parse().ok()?,
+                primary,
+            })
+        })
+        .collect()
+}
+
+/// Ermittelt die Monitorkennungen für `/monitors:`. Der SDL-Client zählt
+/// nicht ab 0, sondern verwendet die Kennungen von SDL.
+#[tauri::command]
+async fn list_monitors(app: tauri::AppHandle) -> Result<Vec<MonitorInfo>, String> {
+    let binary = rdp_executable(&app)?;
+    if backend_kind(&binary) == Backend::Cocoa {
+        return Err("err.multimonBackend".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut child = Command::new(&binary)
+            .arg("/list:monitor")
+            .env("SDL_RENDER_DRIVER", "opengl")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| err1("err.freerdpStart", e))?;
+        let mut stdout = child.stdout.take().ok_or("err.monitorList")?;
+        let reader = std::thread::spawn(move || {
+            let mut output = String::new();
+            let _ = stdout.read_to_string(&mut output);
+            output
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("err.monitorList".to_string());
+                }
+            }
+        }
+        let monitors = parse_monitor_list(&reader.join().unwrap_or_default());
+        if monitors.is_empty() {
+            Err("err.monitorList".into())
+        } else {
+            Ok(monitors)
+        }
+    })
+    .await
+    .map_err(|_| "err.monitorList".to_string())?
+}
+
 fn rdp_target(host: &str, port: u16) -> String {
     // FreeRDP erwartet IPv6-Adressen in eckigen Klammern.
     let host = host.trim();
@@ -772,6 +881,23 @@ fn rdp_target(host: &str, port: u16) -> String {
 /// schließen sich gegenseitig aus, FreeRDP bricht sonst beim Parsen ab.
 fn display_arguments(profile: &RemoteProfile, backend: Backend) -> Vec<String> {
     let mut arguments = Vec::new();
+    // Mit `/multimon` legt der SDL-Client je Monitor ein randloses Fenster in
+    // Monitorgröße an. Fenstergröße, Vollbild und `/smart-sizing` wertet er
+    // dann nicht aus (sdl_context.cpp), deshalb entfallen sie hier.
+    if profile.multimon {
+        arguments.push("/multimon".into());
+        let monitors = profile.monitors.trim();
+        if !monitors.is_empty() {
+            arguments.push(format!("/monitors:{monitors}"));
+        }
+        if let Some(bits) = profile.color_depth.bits() {
+            arguments.push(format!("/bpp:{bits}"));
+        }
+        if profile.resize_behavior == ResizeBehavior::Dynamic {
+            arguments.push("+dynamic-resolution".into());
+        }
+        return arguments;
+    }
     match profile.display_mode {
         DisplayMode::Fullscreen => arguments.push("+f".into()),
         DisplayMode::WorkArea => arguments.push("+workarea".into()),
@@ -815,6 +941,14 @@ fn rdp_arguments(profile: &RemoteProfile, backend: Backend) -> Result<Vec<String
     if profile.protocol != Protocol::Rdp {
         return Err("err.rdpProfileRequired".into());
     }
+    // Der Cocoa-Client kennt weder eine Entra-Anmeldung (kein
+    // `GetAccessToken`) noch mehrere Monitore.
+    if backend == Backend::Cocoa && profile.entra_id {
+        return Err("err.entraIdBackend".into());
+    }
+    if backend == Backend::Cocoa && profile.multimon {
+        return Err("err.multimonBackend".into());
+    }
     let mut arguments = vec![format!("/v:{}", rdp_target(&profile.host, profile.rdp_tcp_port))];
     // Legt den Protokollumfang ausdrücklich fest, statt sich auf FreeRDPs
     // Vorgabe zu verlassen. Gemessen ist die Vorgabe bereits INFO -- dieselbe
@@ -846,6 +980,9 @@ fn rdp_arguments(profile: &RemoteProfile, backend: Backend) -> Result<Vec<String
     }
     if profile.admin_session {
         arguments.push("+admin".into());
+    }
+    if profile.entra_id {
+        arguments.push("/sec:aad".into());
     }
     if !profile.keyboard_layout.trim().is_empty() {
         arguments.push(format!("/kbd:layout:{}", profile.keyboard_layout.trim()));
@@ -1355,12 +1492,33 @@ fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), 
     let binary = session_launcher(profile, &binary).unwrap_or(binary);
     // FreeRDP liest die einzelnen Optionen aus stdin. Dadurch taucht ein
     // gegebenenfalls gespeichertes Kennwort nicht in der Prozessliste auf.
+    //
+    // Mit Entra ID braucht FreeRDP stdin aber später noch für die
+    // Weiterleitungsadresse der Anmeldung. Die Argumente reisen dann über eine
+    // eigene Pipe als Deskriptor 3, und stdout hängt an einem Pseudoterminal:
+    // Nur so gibt `printf` die Zeile "Browse to:" sofort aus, statt sie im
+    // Puffer einer Pipe festzuhalten.
+    #[cfg(unix)]
+    let entra = if profile.entra_id { Some(entra::Channels::open()?) } else { None };
+    #[cfg(not(unix))]
+    let entra: Option<()> = if profile.entra_id { return Err("err.entraIdBackend".into()) } else { None };
     let mut command = Command::new(binary);
     command
-        .arg("/args-from:stdin")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    match &entra {
+        Some(channels) => {
+            command.arg("/args-from:fd:3");
+            channels.prepare(&mut command)?;
+        }
+        None => {
+            command.arg("/args-from:stdin");
+        }
+    }
+    #[cfg(not(unix))]
+    command.arg("/args-from:stdin");
     match backend {
         Backend::X11 => {
             command.env("DISPLAY", ":0");
@@ -1375,12 +1533,26 @@ fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), 
     let mut child = command
         .spawn()
         .map_err(|e| err1("err.freerdpStart", e))?;
-    let written = match child.stdin.as_mut() {
-        Some(stdin) => arguments
-            .iter()
-            .try_for_each(|argument| writeln!(stdin, "{argument}"))
-            .map_err(|e| err1("err.freerdpInput", e)),
-        None => Err("err.freerdpStdin".into()),
+    // Hält sonst eine Kopie des Pseudoterminals offen; der Leser sähe dann
+    // nach dem Ende von FreeRDP nie das Dateiende.
+    drop(command);
+    #[cfg(unix)]
+    let mut entra = entra.map(|channels| channels.after_spawn());
+    let written = {
+        #[cfg(unix)]
+        let target: Option<&mut dyn Write> = match entra.as_mut() {
+            Some(started) => Some(&mut started.arguments),
+            None => child.stdin.as_mut().map(|stdin| stdin as &mut dyn Write),
+        };
+        #[cfg(not(unix))]
+        let target: Option<&mut dyn Write> = child.stdin.as_mut().map(|stdin| stdin as &mut dyn Write);
+        match target {
+            Some(sink) => arguments
+                .iter()
+                .try_for_each(|argument| writeln!(sink, "{argument}"))
+                .map_err(|e| err1("err.freerdpInput", e)),
+            None => Err("err.freerdpStdin".into()),
+        }
     };
     if let Err(error) = written {
         // Ohne vollständige Argumente darf FreeRDP nicht als verwaister
@@ -1390,11 +1562,25 @@ fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), 
         return Err(error);
     }
     // FreeRDP wertet die Argumente erst nach dem Dateiende aus.
-    drop(child.stdin.take());
+    #[cfg(unix)]
+    let entra_label = match entra {
+        Some(started) => Some(started.run(app, window_title(profile), child.stdin.take())),
+        None => {
+            drop(child.stdin.take());
+            None
+        }
+    };
+    #[cfg(not(unix))]
+    {
+        let _ = entra;
+        drop(child.stdin.take());
+    }
     // Muss vor der ersten Wartezeit laufen, sonst blockiert FreeRDP an einem
     // vollen stderr-Puffer und das Sitzungsfenster reagiert nicht mehr.
     let log = drain_stderr(&mut child, session_log_path(&profile.id));
     if let Some(message) = early_failure(&mut child, &log) {
+        #[cfg(unix)]
+        entra::close_window(app, entra_label.as_deref());
         return Err(message);
     }
     let id = profile.id.clone();
@@ -1420,9 +1606,206 @@ fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), 
                 };
             }
         }
+        #[cfg(unix)]
+        entra::close_window(&handle, entra_label.as_deref());
         handle.state::<Sessions>().release(&id);
     });
     Ok(())
+}
+
+/// Anmeldung über Microsoft Entra ID (`/sec:aad`).
+///
+/// Der SDL-Client ist ohne eigene WebView gebaut und nimmt deshalb den
+/// Kommandozeilenweg (`client_cli_get_access_token`, client/common/client.c):
+/// Er schreibt `Browse to: <Adresse>` nach stdout und liest danach eine Zeile
+/// mit der Weiterleitungsadresse von stdin. RemoteDeskRDP öffnet die Adresse in
+/// einem eigenen Fenster, fängt die Weiterleitung ab und reicht sie weiter.
+#[cfg(unix)]
+mod entra {
+    use std::fs::File;
+    use std::io::{self, BufRead, BufReader, Write};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+    use std::os::unix::process::CommandExt;
+    use std::process::{ChildStdin, Command, Stdio};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tauri::Manager;
+
+    static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+
+    fn close_on_exec(fd: RawFd) -> io::Result<()> {
+        // SAFETY: fcntl auf einem gültigen, eigenen Deskriptor.
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn failed(error: io::Error) -> String {
+        super::err1("err.entraIdChannel", error)
+    }
+
+    pub(super) struct Channels {
+        arguments_read: OwnedFd,
+        arguments_write: OwnedFd,
+        terminal: OwnedFd,
+        terminal_child: OwnedFd,
+    }
+
+    pub(super) struct Started {
+        pub(super) arguments: File,
+        terminal: File,
+    }
+
+    impl Channels {
+        pub(super) fn open() -> Result<Self, String> {
+            let mut pipe = [0; 2];
+            // SAFETY: `pipe` erhält ein Feld mit zwei Plätzen.
+            if unsafe { libc::pipe(pipe.as_mut_ptr()) } != 0 {
+                return Err(failed(io::Error::last_os_error()));
+            }
+            // SAFETY: Beide Deskriptoren wurden eben erzeugt und gehören uns.
+            let (arguments_read, arguments_write) = unsafe { (OwnedFd::from_raw_fd(pipe[0]), OwnedFd::from_raw_fd(pipe[1])) };
+            let (mut master, mut slave) = (0, 0);
+            // SAFETY: Name, termios und Fenstergröße dürfen null sein.
+            if unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) } != 0 {
+                return Err(failed(io::Error::last_os_error()));
+            }
+            // SAFETY: Von openpty erzeugt und nur hier übernommen.
+            let (terminal, terminal_child) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+            // Nichts davon darf in andere Kindprozesse durchsickern, etwa in
+            // eine gleichzeitig startende SSH-Sitzung.
+            for fd in [&arguments_read, &arguments_write, &terminal, &terminal_child] {
+                close_on_exec(fd.as_raw_fd()).map_err(failed)?;
+            }
+            Ok(Self { arguments_read, arguments_write, terminal, terminal_child })
+        }
+
+        pub(super) fn prepare(&self, command: &mut Command) -> Result<(), String> {
+            command.stdout(Stdio::from(self.terminal_child.try_clone().map_err(failed)?));
+            let source = self.arguments_read.as_raw_fd();
+            // SAFETY: Im Kind laufen nur async-signal-sichere Aufrufe.
+            unsafe {
+                command.pre_exec(move || {
+                    if source == 3 {
+                        // dup2 auf sich selbst lässt FD_CLOEXEC stehen.
+                        if libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                            return Err(io::Error::last_os_error());
+                        }
+                    } else if libc::dup2(source, 3) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            Ok(())
+        }
+
+        pub(super) fn after_spawn(self) -> Started {
+            // Das Leseende gehört jetzt allein FreeRDP; ohne Schließen sähe es
+            // nie ein Dateiende.
+            drop(self.arguments_read);
+            drop(self.terminal_child);
+            Started { arguments: File::from(self.arguments_write), terminal: File::from(self.terminal) }
+        }
+    }
+
+    impl Started {
+        /// Schließt die Argumentliste und beobachtet stdout. Liefert das
+        /// Präfix der Fensterkennungen dieser Sitzung.
+        pub(super) fn run(self, app: &tauri::AppHandle, title: String, stdin: Option<ChildStdin>) -> String {
+            drop(self.arguments);
+            let tag = format!("entra-{}", NEXT_SESSION.fetch_add(1, Ordering::Relaxed));
+            let stdin = Arc::new(Mutex::new(stdin));
+            let app = app.clone();
+            let prefix = tag.clone();
+            let terminal = self.terminal;
+            std::thread::spawn(move || {
+                let mut count = 0;
+                // Nach dem Ende von FreeRDP meldet das Pseudoterminal EIO; das
+                // beendet die Schleife wie ein Dateiende.
+                for line in BufReader::new(terminal).split(b'\n') {
+                    let Ok(bytes) = line else { break };
+                    let text = String::from_utf8_lossy(&bytes);
+                    if let Some(url) = text.trim().strip_prefix("Browse to:") {
+                        count += 1;
+                        open_window(&app, format!("{prefix}-{count}"), &title, url.trim(), Arc::clone(&stdin));
+                    }
+                }
+            });
+            tag
+        }
+    }
+
+    fn answer(stdin: &Mutex<Option<ChildStdin>>, line: &str) {
+        let mut guard = stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(pipe) = guard.as_mut() {
+            if writeln!(pipe, "{line}").and_then(|_| pipe.flush()).is_err() {
+                *guard = None;
+            }
+        }
+    }
+
+    /// Das Ziel der Weiterleitung: `…/oauth2/nativeclient` bei der direkten
+    /// Anmeldung am Host, `ms-appx-web://…` bei Azure Virtual Desktop.
+    pub(super) fn is_redirect(url: &tauri::Url) -> bool {
+        url.scheme() == "ms-appx-web" || (url.scheme() == "https" && url.path().ends_with("/oauth2/nativeclient"))
+    }
+
+    fn open_window(app: &tauri::AppHandle, label: String, title: &str, url: &str, stdin: Arc<Mutex<Option<ChildStdin>>>) {
+        let target = match url.parse::<tauri::Url>() {
+            Ok(target) if target.scheme() == "https" => target,
+            // Eine unerwartete Adresse wird nicht geöffnet; die leere Antwort
+            // lässt FreeRDP die Anmeldung sauber abbrechen.
+            _ => return answer(&stdin, ""),
+        };
+        let done = Arc::new(AtomicBool::new(false));
+        let navigation = {
+            let (app, label, stdin, done) = (app.clone(), label.clone(), Arc::clone(&stdin), Arc::clone(&done));
+            move |next: &tauri::Url| {
+                if !is_redirect(next) {
+                    return true;
+                }
+                if !done.swap(true, Ordering::SeqCst) {
+                    answer(&stdin, next.as_str());
+                }
+                let (app, label) = (app.clone(), label.clone());
+                std::thread::spawn(move || {
+                    if let Some(window) = app.get_webview_window(&label) {
+                        let _ = window.close();
+                    }
+                });
+                false
+            }
+        };
+        let built = tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::External(target))
+            .title(format!("Microsoft Entra ID – {title}"))
+            .inner_size(520.0, 700.0)
+            .focused(true)
+            .on_navigation(navigation)
+            .build();
+        match built {
+            Ok(window) => window.on_window_event(move |event| {
+                // Schließt der Nutzer das Fenster, bricht FreeRDP die
+                // Anmeldung ab, statt endlos auf eine Antwort zu warten.
+                if matches!(event, tauri::WindowEvent::Destroyed) && !done.swap(true, Ordering::SeqCst) {
+                    answer(&stdin, "");
+                }
+            }),
+            Err(_) => answer(&stdin, ""),
+        }
+    }
+
+    /// Schließt offene Anmeldefenster einer beendeten Sitzung.
+    pub(super) fn close_window(app: &tauri::AppHandle, tag: Option<&str>) {
+        let Some(tag) = tag else { return };
+        let prefix = format!("{tag}-");
+        for (label, window) in app.webview_windows() {
+            if label.starts_with(&prefix) {
+                let _ = window.close();
+            }
+        }
+    }
 }
 
 /// Ablageort des Sitzungsprotokolls. `None`, wenn kein Ordner ermittelbar ist –
@@ -2081,7 +2464,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, active_session_count, restart_application])
+        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, active_session_count, restart_application, list_monitors])
         .build(tauri::generate_context!())
         .expect("Fehler beim Start von RemoteDeskRDP");
     app.run(|app, event| {
@@ -2251,6 +2634,9 @@ mod tests {
             scale: 0,
             scale_desktop: 0,
             admin_session: false,
+            entra_id: false,
+            multimon: false,
+            monitors: String::new(),
             keyboard_layout: String::new(),
             timezone: String::new(),
             remote_app_program: String::new(),
@@ -2283,8 +2669,64 @@ mod tests {
     }
 
     #[test]
+    fn entra_id_adds_aad_security_and_is_refused_by_cocoa() {
+        let mut profile = profile();
+        profile.entra_id = true;
+        let arguments = rdp_arguments(&profile, Backend::Sdl).expect("Argumente");
+        assert!(arguments.contains(&"/sec:aad".to_string()));
+        assert_eq!(rdp_arguments(&profile, Backend::Cocoa).unwrap_err(), "err.entraIdBackend");
+    }
+
+    #[test]
+    fn multimon_replaces_window_size_and_scaling() {
+        let mut profile = profile();
+        profile.multimon = true;
+        profile.monitors = " 2,1 ".into();
+        profile.resize_behavior = ResizeBehavior::Scale;
+        let arguments = rdp_arguments(&profile, Backend::Sdl).expect("Argumente");
+        assert!(arguments.contains(&"/multimon".to_string()));
+        assert!(arguments.contains(&"/monitors:2,1".to_string()));
+        assert!(!arguments.iter().any(|a| a.starts_with("/size:") || a == "+f" || a == "/smart-sizing"));
+        profile.monitors.clear();
+        let arguments = rdp_arguments(&profile, Backend::Sdl).expect("Argumente");
+        assert!(!arguments.iter().any(|a| a.starts_with("/monitors:")));
+        assert_eq!(rdp_arguments(&profile, Backend::Cocoa).unwrap_err(), "err.multimonBackend");
+    }
+
+    #[test]
+    fn entra_and_multimon_are_off_by_default() {
+        let arguments = rdp_arguments(&profile(), Backend::Sdl).expect("Argumente");
+        assert!(!arguments.iter().any(|a| a == "/sec:aad" || a == "/multimon"));
+    }
+
+    #[test]
+    fn the_monitor_list_is_parsed() {
+        let output = "listing 2 monitors:\n     * [1] [PMO G342-CWQK] 3440x1440\t+0+0\n       [3] [Built-in [Retina]] 1512x982\t+-1512+-200\n";
+        let monitors = parse_monitor_list(output);
+        assert_eq!(monitors.len(), 2);
+        assert_eq!(monitors[0], MonitorInfo { id: 1, name: "PMO G342-CWQK".into(), width: 3440, height: 1440, x: 0, y: 0, primary: true });
+        assert_eq!((monitors[1].id, monitors[1].name.as_str(), monitors[1].x, monitors[1].y, monitors[1].primary), (3, "Built-in [Retina]", -1512, -200, false));
+    }
+
+    #[test]
+    fn entra_redirects_are_recognized() {
+        let yes = ["https://login.microsoftonline.com/common/oauth2/nativeclient?code=abc", "ms-appx-web://Microsoft.AAD.BrokerPlugin/a17d?code=x"];
+        let no = ["https://login.microsoftonline.com/common/oauth2/v2.0/authorize?redirect_uri=x", "http://evil/oauth2/nativeclient"];
+        for url in yes {
+            assert!(entra::is_redirect(&url.parse().unwrap()), "{url}");
+        }
+        for url in no {
+            assert!(!entra::is_redirect(&url.parse().unwrap()), "{url}");
+        }
+    }
+
+    #[test]
     fn invalid_extra_rdp_options_are_rejected() {
-        let cases: [(fn(&mut RemoteProfile), &str); 5] = [
+        let cases: [(fn(&mut RemoteProfile), &str); 9] = [
+            (|p| p.monitors = "1,".into(), "err.monitorsInvalid"),
+            (|p| p.monitors = "0;1".into(), "err.monitorsInvalid"),
+            (|p| p.monitors = "a".into(), "err.monitorsInvalid"),
+            (|p| p.monitors = "1 2".into(), "err.monitorsInvalid"),
             (|p| p.scale = 120, "err.scaleInvalid"),
             (|p| p.scale_desktop = 50, "err.scaleDesktopInvalid"),
             (|p| p.keyboard_layout = "a,b".into(), "err.listValueInvalid"),

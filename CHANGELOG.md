@@ -2,6 +2,15 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- Microsoft Entra ID sign-in (`/sec:aad`): the Microsoft login page opens in
+  its own window and the authorization code is passed to FreeRDP. SDL backend
+  only.
+- Multiple monitors (`/multimon`, `/monitors`) with monitor detection in the
+  profile editor. SDL backend only; not yet tested on real multi-monitor
+  setups.
+
 ## 0.7.3 – 2026-10-09
 
 - Update Tauri CLI and plugins: updater 2.13, dialog 2.8, deep-link 2.6,

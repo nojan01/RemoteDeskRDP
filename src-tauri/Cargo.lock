@@ -2820,6 +2820,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "futures-util",
+ "libc",
  "objc2",
  "objc2-app-kit",
  "portable-pty",

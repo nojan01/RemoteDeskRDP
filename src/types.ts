@@ -51,6 +51,9 @@ export type RemoteProfile = {
   /** Prozent; 0 = Vorgabe. Erlaubt: 100–500. */
   scaleDesktop: number;
   adminSession: boolean;
+  entraId: boolean;
+  multimon: boolean;
+  monitors: string;
   keyboardLayout: string;
   timezone: string;
   /** Leer = ganzer Desktop; sonst RemoteApp mit diesem Programm. */
@@ -108,6 +111,9 @@ export const emptyProfile = (): RemoteProfile => ({
   scale: 0,
   scaleDesktop: 0,
   adminSession: false,
+  entraId: false,
+  multimon: false,
+  monitors: "",
   keyboardLayout: "",
   timezone: "",
   remoteAppProgram: "",
@@ -116,3 +122,13 @@ export const emptyProfile = (): RemoteProfile => ({
   certificateMode: "tofu",
   updatedAt: new Date().toISOString(),
 });
+
+export interface MonitorInfo {
+  id: number;
+  name: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  primary: boolean;
+}

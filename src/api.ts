@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { RemoteProfile } from "./types";
+import type { MonitorInfo, RemoteProfile } from "./types";
 
+export const listMonitors = () => invoke<MonitorInfo[]>("list_monitors");
 export const listProfiles = () => invoke<RemoteProfile[]>("list_profiles");
 export const saveProfile = (profile: RemoteProfile) =>
   invoke<RemoteProfile>("save_profile", { profile });

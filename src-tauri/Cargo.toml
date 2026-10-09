@@ -29,6 +29,11 @@ portable-pty = "^0.9.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tauri-plugin-updater = "2.13.2"
 
+[target.'cfg(unix)'.dependencies]
+# Pipe, Pseudoterminal und dup2 für die Entra-ID-Anmeldung. Bereits über
+# tao/portable-pty im Abhängigkeitsbaum.
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
 security-framework-sys = "2"

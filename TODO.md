@@ -3,7 +3,7 @@
 ## RDP-Optionen, die das Profil noch nicht hat
 
 - [x] **Mikrofon** (`/microphone`): Es gibt bisher nur Tonausgabe.
-- [ ] **Mehrere Monitore** (`/multimon`, `/monitors`).
+- [x] **Mehrere Monitore** (`/multimon`, `/monitors`).
 - [x] **HiDPI-Skalierung** (`/scale`, `/scale-desktop`): wichtig auf Retina-Displays.
 - [x] **Admin-/Konsolensitzung** (`/admin`).
 - [x] **Tastaturlayout** (`/kbd`) und **Zeitzone**.
@@ -11,7 +11,7 @@
   Zurückgestellt: Der SDL-Client kann keine RAIL-Fensteraufträge darstellen,
   das Programm erscheint nicht (eingefrorenes Anmeldebild bzw. Schwarzbild).
 - [ ] **Hyper-V-Konsole** (`/pcb`) und **Load-Balancing-Info** für RDS-Farmen.
-- [ ] **Entra-ID-Anmeldung** (`/sec:aad`).
+- [x] **Entra-ID-Anmeldung** (`/sec:aad`).
 
 ## Wayland-Linux
 
