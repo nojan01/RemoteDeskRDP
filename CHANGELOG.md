@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.6 – 2026-10-09
 
 - Fix: RDP connection failures that occur after the initial start-up check
   (e.g. TCP timeouts or a denied macOS "Local Network" permission) are now
