@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.9 – 2026-10-09
 
 - Die Neuregistrierung bei LaunchServices läuft jetzt direkt nach der Installation eines Updates, noch vor dem Neustart. Der mit 0.7.8 eingeführte Lauf beim ersten Start kam zu spät: Der bereits laufende Prozess war beim Systemdienst schon mit der alten Build-Kennung eingestuft, sodass die erste RDP-Verbindung nach dem Update dennoch scheiterte und erst ein manueller Neustart half. Muss die Registrierung ausnahmsweise doch erst beim Start nachgeholt werden (z. B. nach einer Installation per DMG), startet die App sich einmalig selbst neu.
 
