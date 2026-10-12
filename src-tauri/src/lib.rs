@@ -717,6 +717,151 @@ fn delete_profile(id: String, store: tauri::State<'_, ProfileStore>) -> Result<(
     Ok(())
 }
 
+const SHORTCUT_EXECUTABLE: &str = "open-connection";
+const SHORTCUT_BUNDLE_PREFIX: &str = "com.nojan.remotedesk.shortcut.";
+const SHORTCUT_NAME_LIMIT: usize = 80;
+
+/// Deep-Link, der genau dieses Profil verbindet. Die ID wird formular-kodiert;
+/// danach enthält die URL keine Zeichen mehr, die in einfachen
+/// Shell-Anführungszeichen etwas bedeuten.
+fn connect_url(profile_id: &str) -> String {
+    let mut url = tauri::Url::parse("remotedesk://connect").expect("statische URL");
+    url.query_pairs_mut().append_pair("id", profile_id);
+    url.into()
+}
+
+/// Dateiname der Verknüpfung: ohne Pfadtrenner, nicht versteckt, begrenzt.
+fn shortcut_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if c == '/' || c == ':' || c.is_control() { '-' } else { c })
+        .collect();
+    let cleaned: String = cleaned.trim().trim_start_matches('.').trim_start().chars().take(SHORTCUT_NAME_LIMIT).collect();
+    let cleaned = cleaned.trim_end();
+    if cleaned.is_empty() { "RemoteDesk".into() } else { cleaned.to_string() }
+}
+
+fn shortcut_bundle_id(profile_id: &str) -> String {
+    let suffix: String = profile_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+    format!("{SHORTCUT_BUNDLE_PREFIX}{suffix}")
+}
+
+fn shortcut_info_plist(name: &str, profile_id: &str, with_icon: bool) -> String {
+    let name = xml_escape(name);
+    let bundle_id = xml_escape(&shortcut_bundle_id(profile_id));
+    let icon = if with_icon { "\n  <key>CFBundleIconFile</key>\n  <string>icon</string>" } else { "" };
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>de</string>
+  <key>CFBundleExecutable</key>
+  <string>{SHORTCUT_EXECUTABLE}</string>
+  <key>CFBundleIdentifier</key>
+  <string>{bundle_id}</string>
+  <key>CFBundleName</key>
+  <string>{name}</string>
+  <key>CFBundleDisplayName</key>
+  <string>{name}</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>{icon}
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+"#
+    )
+}
+
+fn shortcut_script(profile_id: &str) -> String {
+    format!("#!/bin/sh\nexec /usr/bin/open '{}'\n", connect_url(profile_id))
+}
+
+/// Stammt das Bundle von uns und gehört es zu diesem Profil? Nur dann darf
+/// eine neue Verknüpfung es ersetzen.
+fn is_shortcut_for(path: &Path, profile_id: &str) -> bool {
+    let marker = format!("<string>{}</string>", xml_escape(&shortcut_bundle_id(profile_id)));
+    std::fs::read_to_string(path.join("Contents/Info.plist")).is_ok_and(|plist| plist.contains(&marker))
+}
+
+/// Legt in `dir` ein Mini-App-Bundle an, das beim Öffnen per Deep-Link die
+/// Verbindung startet. Eine ältere Verknüpfung zum selben Profil wird
+/// ersetzt, fremde Dateien gleichen Namens bleiben unangetastet.
+fn write_shortcut(dir: &Path, name: &str, profile_id: &str, icon: Option<&Path>) -> Result<PathBuf, String> {
+    let base = shortcut_file_name(name);
+    let target = (1..=99)
+        .map(|n| dir.join(if n == 1 { format!("{base}.app") } else { format!("{base} {n}.app") }))
+        .find(|candidate| !candidate.exists() || is_shortcut_for(candidate, profile_id))
+        .ok_or_else(|| "err.shortcutNameTaken".to_string())?;
+    // Erst vollständig daneben bauen, dann umbenennen: Ein halb geschriebenes
+    // Bundle soll nie auf dem Schreibtisch liegen.
+    let staging = dir.join(format!(".{base}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    let build = || -> std::io::Result<()> {
+        let contents = staging.join("Contents");
+        let macos = contents.join("MacOS");
+        std::fs::create_dir_all(&macos)?;
+        std::fs::write(contents.join("Info.plist"), shortcut_info_plist(name, profile_id, icon.is_some()))?;
+        let executable = macos.join(SHORTCUT_EXECUTABLE);
+        std::fs::write(&executable, shortcut_script(profile_id))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
+        }
+        if let Some(icon) = icon {
+            let resources = contents.join("Resources");
+            std::fs::create_dir_all(&resources)?;
+            std::fs::copy(icon, resources.join("icon.icns"))?;
+        }
+        if target.exists() {
+            std::fs::remove_dir_all(&target)?;
+        }
+        std::fs::rename(&staging, &target)
+    };
+    if let Err(error) = build() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error.to_string());
+    }
+    Ok(target)
+}
+
+/// Legt für ein Profil eine Verknüpfung auf dem Schreibtisch an und liefert
+/// deren Dateinamen.
+#[tauri::command(async)]
+fn create_desktop_shortcut(id: String, store: tauri::State<'_, ProfileStore>) -> Result<String, String> {
+    keychain_account(&id)?;
+    #[cfg(target_os = "macos")]
+    {
+        let profile = {
+            let _guard = lock_profiles(&store)?;
+            read_profiles()?.into_iter().find(|profile| profile.id == id).ok_or_else(|| "err.shortcutProfileMissing".to_string())?
+        };
+        let desktop = dirs::desktop_dir().ok_or_else(|| "err.desktopMissing".to_string())?;
+        let icon = std::env::current_exe()
+            .ok()
+            .and_then(|exe| bundle_path(&exe))
+            .map(|bundle| bundle.join("Contents/Resources/icon.icns"))
+            .filter(|icon| icon.is_file());
+        let target = write_shortcut(&desktop, &profile.name, &profile.id, icon.as_deref())?;
+        Ok(target.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = store;
+        Err("err.shortcutUnsupported".into())
+    }
+}
+
 fn executable_at(path: impl AsRef<Path>) -> Option<PathBuf> {
     let path = path.as_ref();
     path.is_file().then(|| path.to_path_buf())
@@ -1434,7 +1579,6 @@ fn safe_identifier(raw: &str) -> String {
 
 /// Der Profilname landet in einer XML-Datei; die XML-Sonderzeichen müssen
 /// maskiert werden, sonst entsteht kaputtes Plist und das Startbundle taugt nichts.
-#[cfg(target_os = "macos")]
 fn xml_escape(raw: &str) -> String {
     raw.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -2853,7 +2997,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, active_session_count, restart_application, list_monitors, check_local_network, open_local_network_settings])
+        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, create_desktop_shortcut, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, active_session_count, restart_application, list_monitors, check_local_network, open_local_network_settings])
         .build(tauri::generate_context!())
         .expect("Fehler beim Start von RemoteDeskRDP");
     app.run(|app, event| {
@@ -2935,6 +3079,66 @@ mod tests {
         assert_eq!(parse("remotedesk://connect"), None);
         assert_eq!(parse("remotedesk://connect?id="), None);
         assert_eq!(parse("remotedesk://connect?id=%20%20"), None);
+    }
+
+    /// Die Verknüpfung muss genau den Link erzeugen, den der Parser wieder
+    /// zur selben ID auflöst – auch bei Zeichen, die Shell oder URL stören.
+    #[test]
+    fn shortcut_link_round_trips_and_is_shell_safe() {
+        for id in ["5f1c7a2e-0b7d-4c1e-9a3f-2d6b8e4f1a90", "a'b", "a&id=b", "ä ö"] {
+            let url = connect_url(id);
+            assert!(!url.contains('\''), "{url}");
+            let parsed = tauri::Url::parse(&url).ok().as_ref().and_then(profile_id_from_url);
+            assert_eq!(parsed.as_deref(), Some(id));
+        }
+        assert_eq!(
+            shortcut_script("abc"),
+            "#!/bin/sh\nexec /usr/bin/open 'remotedesk://connect?id=abc'\n"
+        );
+    }
+
+    #[test]
+    fn shortcut_file_names_are_safe() {
+        assert_eq!(shortcut_file_name("Server/Prod: 1"), "Server-Prod- 1");
+        assert_eq!(shortcut_file_name("  ..versteckt "), "versteckt");
+        assert_eq!(shortcut_file_name("   "), "RemoteDesk");
+        assert_eq!(shortcut_file_name("a\nb"), "a-b");
+        assert_eq!(shortcut_file_name(&"x".repeat(200)).chars().count(), SHORTCUT_NAME_LIMIT);
+    }
+
+    #[test]
+    fn shortcut_plist_escapes_names() {
+        let plist = shortcut_info_plist("A & <B>", "id/1", true);
+        assert!(plist.contains("<string>A &amp; &lt;B&gt;</string>"));
+        assert!(plist.contains("<string>com.nojan.remotedesk.shortcut.id-1</string>"));
+        assert!(plist.contains("<key>CFBundleIconFile</key>"));
+        assert!(!shortcut_info_plist("A", "id", false).contains("CFBundleIconFile"));
+    }
+
+    /// Eine alte Verknüpfung zum selben Profil wird ersetzt, eine fremde Datei
+    /// gleichen Namens nie.
+    #[test]
+    fn shortcut_replaces_own_bundle_but_not_foreign_files() {
+        let dir = std::env::temp_dir().join(format!("remotedesk-shortcut-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = write_shortcut(&dir, "Büro", "p1", None).unwrap();
+        assert_eq!(first, dir.join("Büro.app"));
+        let script = dir.join("Büro.app/Contents/MacOS").join(SHORTCUT_EXECUTABLE);
+        assert!(std::fs::read_to_string(&script).unwrap().contains("id=p1"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&script).unwrap().permissions().mode() & 0o777, 0o755);
+        }
+        assert_eq!(write_shortcut(&dir, "Büro", "p1", None).unwrap(), first);
+        assert_eq!(write_shortcut(&dir, "Büro", "p2", None).unwrap(), dir.join("Büro 2.app"));
+        std::fs::write(dir.join("Notiz.app"), "fremd").unwrap();
+        assert_eq!(write_shortcut(&dir, "Notiz", "p1", None).unwrap(), dir.join("Notiz 2.app"));
+        assert_eq!(std::fs::read_to_string(dir.join("Notiz.app")).unwrap(), "fremd");
+        let leftovers = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
+        assert_eq!(leftovers, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Fehler muessen als Code herausgehen, damit die Oberflaeche sie in der

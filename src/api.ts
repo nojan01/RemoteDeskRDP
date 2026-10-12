@@ -6,6 +6,7 @@ export const listProfiles = () => invoke<RemoteProfile[]>("list_profiles");
 export const saveProfile = (profile: RemoteProfile) =>
   invoke<RemoteProfile>("save_profile", { profile });
 export const deleteProfile = (id: string) => invoke<void>("delete_profile", { id });
+export const createDesktopShortcut = (id: string) => invoke<string>("create_desktop_shortcut", { id });
 export const connectProfile = (profile: RemoteProfile) =>
   invoke<void>("connect_profile", { profile });
 export const startVncSession = (profile: RemoteProfile) =>

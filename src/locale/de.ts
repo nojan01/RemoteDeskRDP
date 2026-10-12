@@ -35,6 +35,8 @@ export const de: Record<string, string> = {
   "state.saveFailed": "Speichern fehlgeschlagen: {error}",
   "state.deleted": "Profil gelöscht",
   "state.deleteFailed": "Löschen fehlgeschlagen: {error}",
+  "state.shortcutCreated": "Verknüpfung „{name}“ liegt auf dem Schreibtisch.",
+  "state.shortcutFailed": "Verknüpfung konnte nicht angelegt werden: {error}",
   "state.connecting": "Verbindung wird vorbereitet …",
   "state.linkUnknown": "Die angeforderte Verbindung ist hier nicht bekannt.",
   "state.connected": "{name} wurde in einem eigenen Sitzungsfenster gestartet.",
@@ -170,6 +172,7 @@ export const de: Record<string, string> = {
 
   // ─── Fußleiste ──────────────────────────────────────────────────
   "action.deleteProfile": "Profil löschen",
+  "action.desktopShortcut": "Auf Schreibtisch legen",
   "action.saveProfile": "Profil sichern",
   "action.connect": "Verbinden",
 
@@ -367,6 +370,10 @@ export const de: Record<string, string> = {
   "err.freerdpStdin": "Die Eingabe des RDP-Backends konnte nicht geöffnet werden.",
   "err.objectStorageMoved": "S3- und Swift-Profile werden hier nicht mehr unterstützt; bitte DualBeam verwenden.",
   "err.objectEmbeddedOnly": "S3- und Swift-Profile lassen sich hier nicht öffnen; bitte DualBeam verwenden.",
+  "err.shortcutProfileMissing": "Das Profil ist nicht gespeichert.",
+  "err.desktopMissing": "Der Schreibtisch-Ordner wurde nicht gefunden.",
+  "err.shortcutNameTaken": "Auf dem Schreibtisch ist kein freier Name für die Verknüpfung mehr.",
+  "err.shortcutUnsupported": "Schreibtisch-Verknüpfungen gibt es nur unter macOS.",
   "menu.checkUpdates": "Nach Updates suchen …",
   "update.checking": "Suche nach Updates …",
   "update.upToDate": "RemoteDeskRDP {version} ist aktuell.",

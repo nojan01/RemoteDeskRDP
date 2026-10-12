@@ -34,6 +34,8 @@ export const en: Record<string, string> = {
   "state.saveFailed": "Saving failed: {error}",
   "state.deleted": "Profile deleted",
   "state.deleteFailed": "Deleting failed: {error}",
+  "state.shortcutCreated": "Shortcut “{name}” was placed on the desktop.",
+  "state.shortcutFailed": "Could not create the shortcut: {error}",
   "state.connecting": "Preparing the connection …",
   "state.linkUnknown": "The requested connection is not known here.",
   "state.connected": "{name} was started in its own session window.",
@@ -169,6 +171,7 @@ export const en: Record<string, string> = {
 
   // ─── Footer ─────────────────────────────────────────────────────
   "action.deleteProfile": "Delete profile",
+  "action.desktopShortcut": "Add to desktop",
   "action.saveProfile": "Save profile",
   "action.connect": "Connect",
 
@@ -366,6 +369,10 @@ export const en: Record<string, string> = {
   "err.freerdpStdin": "Could not open the input of the RDP backend.",
   "err.objectStorageMoved": "S3 and Swift profiles are no longer supported here; please use DualBeam.",
   "err.objectEmbeddedOnly": "S3 and Swift profiles cannot be opened here; please use DualBeam.",
+  "err.shortcutProfileMissing": "The profile has not been saved.",
+  "err.desktopMissing": "The desktop folder could not be found.",
+  "err.shortcutNameTaken": "There is no free name left on the desktop for the shortcut.",
+  "err.shortcutUnsupported": "Desktop shortcuts are only available on macOS.",
   "menu.checkUpdates": "Check for Updates…",
   "update.checking": "Checking for updates…",
   "update.upToDate": "RemoteDeskRDP {version} is up to date.",

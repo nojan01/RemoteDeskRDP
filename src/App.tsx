@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import RFB from "@novnc/novnc";
-import { checkLocalNetwork, closeTerminalSession, connectProfile, deleteProfile, forgetGatewayPassword, forgetPassword, listMonitors, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, openLocalNetworkSettings, saveGatewayPassword, savePassword, saveProfile, setUpdateMenuLabel, startVncSession, takePendingLink } from "./api";
+import { checkLocalNetwork, closeTerminalSession, connectProfile, createDesktopShortcut, deleteProfile, forgetGatewayPassword, forgetPassword, listMonitors, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, openLocalNetworkSettings, saveGatewayPassword, savePassword, saveProfile, setUpdateMenuLabel, startVncSession, takePendingLink } from "./api";
 import { checkForUpdates, type UpdateReporter } from "./updater";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -442,6 +442,15 @@ export function App() {
       newProfile(); setStatus({ key: "state.deleted" });
     } catch (error) { setStatus({ key: "state.deleteFailed", error }); }
   };
+  /** Legt ein Startsymbol aufs Schreibtisch; ungesicherte Änderungen werden
+   *  vorher gespeichert, damit Name und Ziel der Verknüpfung stimmen. */
+  const addShortcut = async () => {
+    try {
+      const saved = await persist();
+      const file = await createDesktopShortcut(saved.id);
+      setStatus({ key: "state.shortcutCreated", name: file.replace(/\.app$/, "") });
+    } catch (error) { setStatus({ key: "state.shortcutFailed", error }); }
+  };
   const connect = async () => {
     setStatus({ key: "state.connecting" });
     let profile: RemoteProfile | undefined;
@@ -623,7 +632,7 @@ export function App() {
           <label class="select-label"><span>{t("session.certificates")}</span><select value={current().certificateMode} onChange={(event) => update("certificateMode", event.currentTarget.value as RemoteProfile["certificateMode"])}><option value="prompt">{t("session.cert.prompt")}</option><option value="tofu">{t("session.cert.tofu")}</option><option value="ignore">{t("session.cert.ignore")}</option></select></label>
         </section></Show>
       </div>
-      <Show when={!vncSession() && !isVncWindow && !isTerminalWindow}><footer class="actionbar"><button type="button" class="danger-quiet" disabled={!selectedId()} onClick={remove}>{t("action.deleteProfile")}</button><div class="actions"><button type="button" class="secondary" onClick={save}>{t("action.saveProfile")}</button><button type="button" class="connect" onClick={connect}>{t("action.connect")} <span>→</span></button></div></footer></Show>
+      <Show when={!vncSession() && !isVncWindow && !isTerminalWindow}><footer class="actionbar"><button type="button" class="danger-quiet" disabled={!selectedId()} onClick={remove}>{t("action.deleteProfile")}</button><div class="actions"><button type="button" class="secondary" disabled={!selectedId()} onClick={addShortcut}>{t("action.desktopShortcut")}</button><button type="button" class="secondary" onClick={save}>{t("action.saveProfile")}</button><button type="button" class="connect" onClick={connect}>{t("action.connect")} <span>→</span></button></div></footer></Show>
     </section>
 
     <Show when={helpOpen()}>

@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>RemoteDeskRDP leitet das Mikrofon in die RDP-Sitzung um, wenn das im Profil eingeschaltet ist.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>RemoteDeskRDP legt auf Wunsch Verknüpfungen zu Verbindungen auf dem Schreibtisch ab.</string>
 </dict>
 </plist>
