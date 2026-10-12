@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.11 – 2026-10-09
 
 - Neu: „Auf Schreibtisch legen“ erstellt für das gewählte Profil ein kleines Startsymbol (`<Name>.app`) auf dem Schreibtisch. Ein Doppelklick öffnet die Verbindung direkt über `remotedesk://connect?id=…` – für RDP, VNC, SSH, SFTP und Mosh. Erneutes Anlegen ersetzt die eigene Verknüpfung; fremde Dateien gleichen Namens bleiben unangetastet.
 
