@@ -2,6 +2,10 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- Hilfe: neuer Abschnitt „Anmeldung an Windows: Kennwort statt PIN“. Windows Hello lässt die PIN über Remotedesktop nicht zu; der Abschnitt erklärt, wie die Anmeldung mit einem Microsoft-Konto per Kennwort gelingt, auch wenn das Konto bisher nur mit PIN genutzt wurde.
+
 ## 0.7.11 – 2026-10-09
 
 - Neu: „Auf Schreibtisch legen“ erstellt für das gewählte Profil ein kleines Startsymbol (`<Name>.app`) auf dem Schreibtisch. Ein Doppelklick öffnet die Verbindung direkt über `remotedesk://connect?id=…` – für RDP, VNC, SSH, SFTP und Mosh. Erneutes Anlegen ersetzt die eigene Verknüpfung; fremde Dateien gleichen Namens bleiben unangetastet.

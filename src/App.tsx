@@ -21,7 +21,7 @@ type Status = { key: string; name?: string; error?: unknown; params?: Record<str
 /** Reihenfolge der Hilfeabschnitte; die Texte stehen in den Wörterbüchern. */
 const helpSections = [
   "targets", "ports", "vnc", "ssh", "sftp", "mosh", "gateway", "udp", "reconnect", "display", "files", "folders",
-  "limits", "printer", "smartcard", "video", "microphone", "admin", "entra", "multimon", "scaling", "keyboard", "security", "localNetwork", "appearance", "dualbeam",
+  "limits", "printer", "smartcard", "video", "microphone", "admin", "signin", "entra", "multimon", "scaling", "keyboard", "security", "localNetwork", "appearance", "dualbeam",
 ] as const;
 
 /** Häufige Windows-Tastaturlayouts (KLID). Freie Eingabe bleibt möglich. */
