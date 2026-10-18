@@ -51,7 +51,9 @@ fi
   # display several times over, and it announces an empty clipboard format list
   # while negotiating the channel. Copying files out of the session is gated
   # behind FUSE, which macOS cannot provide. Its textures also keep SDL's
-  # default alpha blending, which blanks the image at 24 and 32 bpp.
+  # default alpha blending, which blanks the image at 24 and 32 bpp. Measuring
+  # the displays through a fullscreen probe window blacks out the whole screen
+  # for a moment on macOS.
   # Our patch fixes all of these.
   # Reset the patched files first so a partially reverted tree cannot silently
   # produce an unpatched backend.

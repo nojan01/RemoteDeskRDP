@@ -164,6 +164,16 @@ per `git checkout --` zurückgesetzt wurden.
     wird die Verbindung mit einer Logmeldung beendet. Die Programmfenster
     erscheinen nicht nahtlos, sondern im normalen Sitzungsfenster.
 
+13. client/SDL/SDL3/sdl_window.cpp (schwarzer Bildschirm beim Start)
+    Zum Vermessen der Monitore oeffnet der SDL-Client je Display ein kleines
+    Fenster, schaltet es in den Vollbildmodus und liest Lage, Pixelgroesse und
+    Skalierung ab. Unter macOS zieht dieses Fenster in einen eigenen
+    Vollbild-Space: Der ganze Bildschirm wird bei jedem Sitzungsstart kurz
+    schwarz, als wechsle die Aufloesung. Unter macOS liefern
+    SDL_GetDisplayBounds() und die Pixeldichte des aktuellen Modus dieselben
+    Werte ohne Fenster (gegengeprueft: 3440x1440, Skalierung 100, vorher wie
+    nachher); das Messfenster entfaellt dort.
+
 diff --git a/client/Mac/Keyboard.m b/client/Mac/Keyboard.m
 index 31682d1..625142d 100644
 --- a/client/Mac/Keyboard.m
@@ -1777,7 +1787,7 @@ index e4db4a5..d887477 100755
    rm -rf $INSTALL
  fi
 diff --git a/client/SDL/SDL3/sdl_window.cpp b/client/SDL/SDL3/sdl_window.cpp
-index a683dad..a1ffd1e 100644
+index a683dad..77f9f44 100644
 --- a/client/SDL/SDL3/sdl_window.cpp
 +++ b/client/SDL/SDL3/sdl_window.cpp
 @@ -288,6 +288,14 @@ void SdlWindow::ensureRenderTarget()
@@ -1805,3 +1815,99 @@ index a683dad..a1ffd1e 100644
  		_gdiTextureW = surface->w;
  		_gdiTextureH = surface->h;
  	}
+@@ -578,6 +589,7 @@ SdlWindow SdlWindow::create(SDL_DisplayID id, const std::string& title, Uint32 f
+ 	return window;
+ }
+ 
++#if !defined(__APPLE__)
+ static SDL_Window* createDummy(SDL_DisplayID id)
+ {
+ 	const auto x = SDL_WINDOWPOS_CENTERED_DISPLAY(id);
+@@ -614,9 +626,60 @@ static SDL_Window* createDummy(SDL_DisplayID id)
+ 	}
+ 	return window;
+ }
++#endif
++
++#if defined(__APPLE__)
++/* RemoteDesk: Unter macOS wechselt das Vollbild-Messfenster in einen eigenen
++ * Space, der ganze Bildschirm wird bei jedem Start kurz schwarz. Das Display
++ * liefert dieselben Werte ohne Fenster: Lage und Groesse in Punkten, die
++ * Pixeldichte des aktuellen Modus entspricht dem Backing-Faktor. */
++static bool displayRect(SDL_DisplayID id, bool forceAsPrimary, SDL_Rect& rect, float& scale)
++{
++	SDL_Rect bounds = {};
++	if (!SDL_GetDisplayBounds(id, &bounds))
++		return false;
++	const auto mode = SDL_GetCurrentDisplayMode(id);
++	if (!mode)
++		return false;
++
++	const float density = (mode->pixel_density > 0.0f) ? mode->pixel_density : 1.0f;
++	rect.x = forceAsPrimary ? 0 : bounds.x;
++	rect.y = forceAsPrimary ? 0 : bounds.y;
++	rect.w = static_cast<int>(std::lroundf(static_cast<float>(bounds.w) * density));
++	rect.h = static_cast<int>(std::lroundf(static_cast<float>(bounds.h) * density));
++	scale = density * SDL_GetDisplayContentScale(id);
++	return (rect.w > 0) && (rect.h > 0);
++}
++#endif
+ 
+ rdpMonitor SdlWindow::query(SDL_DisplayID id, bool forceAsPrimary)
+ {
++#if defined(__APPLE__)
++	SDL_Rect r = {};
++	float factor = 1.0f;
++	if (!displayRect(id, forceAsPrimary, r, factor))
++		return {};
++
++	rdpMonitor monitor{};
++	monitor.orig_screen = id;
++	monitor.x = r.x;
++	monitor.y = r.y;
++	monitor.width = r.w;
++	monitor.height = r.h;
++	monitor.is_primary = forceAsPrimary || (id == SDL_GetPrimaryDisplay());
++	monitor.attributes.desktopScaleFactor = static_cast<UINT32>(std::roundf(factor * 100.0f));
++	monitor.attributes.deviceScaleFactor = 100;
++	monitor.attributes.orientation =
++	    sdl::utils::orientaion_to_rdp(SDL_GetCurrentDisplayOrientation(id));
++	monitor.attributes.physicalWidth = WINPR_ASSERTING_INT_CAST(uint32_t, r.w);
++	monitor.attributes.physicalHeight = WINPR_ASSERTING_INT_CAST(uint32_t, r.h);
++	SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
++	             "monitor %" PRIu32 ": %" PRId32 "x%" PRId32 "+%" PRId32 "+%" PRId32
++	             " scale %" PRIu32 " primary %" PRIu32,
++	             monitor.orig_screen, monitor.width, monitor.height, monitor.x, monitor.y,
++	             monitor.attributes.desktopScaleFactor, monitor.is_primary);
++	return monitor;
++#else
+ 	std::unique_ptr<SDL_Window, void (*)(SDL_Window*)> window(createDummy(id), SDL_DestroyWindow);
+ 	if (!window)
+ 		return {};
+@@ -632,10 +695,18 @@ rdpMonitor SdlWindow::query(SDL_DisplayID id, bool forceAsPrimary)
+ 		;
+ 
+ 	return query(window.get(), id, forceAsPrimary);
++#endif
+ }
+ 
+ SDL_Rect SdlWindow::rect(SDL_DisplayID id, bool forceAsPrimary)
+ {
++#if defined(__APPLE__)
++	SDL_Rect r = {};
++	float factor = 1.0f;
++	if (!displayRect(id, forceAsPrimary, r, factor))
++		return {};
++	return r;
++#else
+ 	std::unique_ptr<SDL_Window, void (*)(SDL_Window*)> window(createDummy(id), SDL_DestroyWindow);
+ 	if (!window)
+ 		return {};
+@@ -651,6 +722,7 @@ SDL_Rect SdlWindow::rect(SDL_DisplayID id, bool forceAsPrimary)
+ 		;
+ 
+ 	return rect(window.get(), forceAsPrimary);
++#endif
+ }
+ 
+ bool SdlWindow::tryFallback(bool isFullscreen)
