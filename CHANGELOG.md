@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.12 – 2026-10-18
 
 - Behoben: Beim Start einer RDP-Sitzung wurde der ganze Mac-Bildschirm kurz schwarz. Der SDL-Client vermaß die Monitore über ein kurz im Vollbild geöffnetes Fenster, das unter macOS in einen eigenen Space wechselte. Die Werte kommen jetzt direkt vom Display.
 - Hilfe: neuer Abschnitt „Anmeldung an Windows: Kennwort statt PIN“. Windows Hello lässt die PIN über Remotedesktop nicht zu; der Abschnitt erklärt, wie die Anmeldung mit einem Microsoft-Konto per Kennwort gelingt, auch wenn das Konto bisher nur mit PIN genutzt wurde.
