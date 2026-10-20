@@ -2609,6 +2609,10 @@ fn minimize_window(window: tauri::Window) {
         menubar::hide_main_window(window.app_handle());
         return;
     }
+    // Für einen Link verborgen geblieben: Minimieren würde es erst zeigen.
+    if menubar::withheld() {
+        return;
+    }
     // Tauris `minimize()` meldet auf macOS Ok, klappt das Fenster aber nicht
     // zuverlaessig ein - gemessen blieb `is_minimized()` false, das Fenster
     // stand weiter auf dem Schirm. Auch AppKits `miniaturize` greift nur
@@ -2682,6 +2686,7 @@ fn restore_main_window(app: &tauri::AppHandle) {
 fn remember_link(handle: &tauri::AppHandle, url: &tauri::Url) {
     use tauri::{Emitter, Manager};
     let Some(id) = profile_id_from_url(url) else { return };
+    menubar::withhold_for_link(handle);
     if let Ok(mut slot) = handle.state::<PendingLink>().0.lock() {
         *slot = Some(id);
     }
@@ -3033,14 +3038,14 @@ pub fn run() {
         .on_window_event(menubar::on_window_event)
         .setup(|app| {
             // Das Hauptfenster startet unsichtbar (tauri.conf.json). Gezeigt wird
-            // es immer, außer beim Anmeldestart im Menüleisten-Betrieb.
+            // es nicht beim Anmeldestart im Menüleisten-Betrieb und nicht, wenn
+            // ein Verbindungslink die App gestartet hat.
             menubar::load(app.handle());
             menubar::login_item::refresh(app.handle());
             if menubar::start_hidden(app.handle()) {
                 menubar::refresh_dock(app.handle());
-            } else if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
+            } else {
+                menubar::show_at_launch(app.handle());
             }
             menubar::sync_tray(app.handle());
             app.on_menu_event(|app, event| menubar::on_menu_event(app, event.id().as_ref()));

@@ -2,6 +2,10 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- Startet eine Schreibtisch-Verknüpfung (oder DualBeam) RemoteDeskRDP, bleibt das Programmfenster jetzt verborgen – wie beim Start aus der Menüleiste. Bisher erschien es kurz und klappte dann weg. Das Fenster kommt nur noch für eine Rückfrage oder eine Fehlermeldung hervor. Ohne Menüleisten-Betrieb holt ein Klick aufs Dock-Symbol es zurück.
+
 ## 0.7.14 – 2026-10-20
 
 - Behoben: Die erste RDP-Verbindung nach einem Update scheiterte mit CONNECT_FAILED, und das Fenster öffnete sich – auch beim Start aus der Menüleiste. Ursache ist macOS: Nach jedem Update hält der Dienst für die Freigabe „Lokales Netzwerk“ noch die Kennung der alten Programmversion und weist den ersten Zugriff einmal ab. Scheitert eine Verbindung innerhalb weniger Sekunden so, wartet RemoteDeskRDP jetzt, bis macOS die Freigabe erneuert hat, und versucht es einmal still erneut.

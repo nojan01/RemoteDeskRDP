@@ -11,9 +11,18 @@
 use crate::{config_dir, err1, read_profiles, Protocol};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
+
+/// Fenster beim Start: noch offen, gezeigt oder für einen Link zurückgehalten.
+const LAUNCH_PENDING: u8 = 0;
+const LAUNCH_SHOWN: u8 = 1;
+const LAUNCH_WITHHELD: u8 = 2;
+static LAUNCH_WINDOW: AtomicU8 = AtomicU8::new(LAUNCH_PENDING);
+/// So lange wartet das Fenster beim Start auf einen Verbindungslink.
+const LINK_GRACE: Duration = Duration::from_millis(400);
 
 const SETTINGS_FILE: &str = "settings.json";
 const TRAY_ID: &str = "remotedesk-tray";
@@ -114,6 +123,47 @@ pub(crate) fn start_hidden(app: &AppHandle) -> bool {
     menu_bar_enabled(app) && std::env::args().any(|argument| argument == BACKGROUND_ARGUMENT)
 }
 
+/// Zeigt das Hauptfenster beim Start – außer, die App wurde für einen
+/// Verbindungslink gestartet (Schreibtisch-Verknüpfung, DualBeam).
+///
+/// macOS reicht den Link erst nach `setup` nach, wenn die Ereignisschleife
+/// läuft. Ohne kurze Wartezeit stünde das Fenster also schon da, bevor die
+/// App vom Link erfährt. Ein Start ohne Link zeigt das Fenster danach wie gewohnt.
+pub(crate) fn show_at_launch(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(LINK_GRACE);
+        if LAUNCH_WINDOW
+            .compare_exchange(LAUNCH_PENDING, LAUNCH_SHOWN, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            show_main_window(&handle);
+        }
+    });
+}
+
+/// Ein Verbindungslink ist eingetroffen. Kam er beim Start, bleibt das Fenster
+/// verborgen; die Oberfläche holt es nur für Rückfragen und Fehler hervor.
+///
+/// Außerhalb von macOS bliebe ohne Menüleisten-Symbol kein Weg zurück ins
+/// Fenster, denn dort fehlt das Dock.
+pub(crate) fn withhold_for_link(app: &AppHandle) {
+    if !(cfg!(target_os = "macos") || menu_bar_enabled(app)) {
+        return;
+    }
+    if LAUNCH_WINDOW
+        .compare_exchange(LAUNCH_PENDING, LAUNCH_WITHHELD, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        refresh_dock(app);
+    }
+}
+
+/// Ob das Fenster seit dem Start für einen Link verborgen geblieben ist.
+pub(crate) fn withheld() -> bool {
+    LAUNCH_WINDOW.load(Ordering::Acquire) == LAUNCH_WITHHELD
+}
+
 #[tauri::command]
 pub(crate) fn get_app_settings(app: AppHandle) -> AppSettings {
     AppSettings { menu_bar: menu_bar_enabled(&app), launch_at_login: login_item::enabled() }
@@ -150,10 +200,11 @@ pub(crate) fn set_tray_labels(app: AppHandle, labels: TrayLabels) {
 ///
 /// Die Oberfläche ruft das vor Rückfragen und nach Fehlern. Ohne sichtbares
 /// Fenster gingen Dialog und Meldung sonst unter. Im normalen Betrieb bleibt
-/// alles, wie es ist.
+/// alles, wie es ist – außer, das Fenster wurde beim Start für einen Link
+/// zurückgehalten.
 #[tauri::command]
 pub(crate) fn reveal_main_window(app: AppHandle) {
-    if !menu_bar_enabled(&app) {
+    if !menu_bar_enabled(&app) && !withheld() {
         return;
     }
     let visible = app
@@ -167,6 +218,7 @@ pub(crate) fn reveal_main_window(app: AppHandle) {
 
 /// Zeigt das Hauptfenster und, falls nötig, wieder das Dock-Symbol.
 pub(crate) fn show_main_window(app: &AppHandle) {
+    LAUNCH_WINDOW.store(LAUNCH_SHOWN, Ordering::Release);
     set_dock_visible(app, true);
     #[cfg(target_os = "macos")]
     crate::restore_main_window(app);
