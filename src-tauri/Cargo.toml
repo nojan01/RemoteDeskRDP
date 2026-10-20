@@ -42,7 +42,7 @@ security-framework-sys = "2"
 # der Aufruf meldet Ok, das Fenster bleibt aber stehen. Wir rufen daher
 # `miniaturize:` selbst auf.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder", "NSApplication"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder", "NSApplication", "NSRunningApplication"] }
 
 [profile.release]
 codegen-units = 1

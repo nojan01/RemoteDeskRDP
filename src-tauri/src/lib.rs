@@ -2687,6 +2687,9 @@ fn remember_link(handle: &tauri::AppHandle, url: &tauri::Url) {
     use tauri::{Emitter, Manager};
     let Some(id) = profile_id_from_url(url) else { return };
     menubar::withhold_for_link(handle);
+    // LaunchServices hat die Menüleisten-App für den Link eben zur Dock-App
+    // gemacht; ohne sichtbares Fenster gehört sie zurück in die Menüleiste.
+    menubar::refresh_dock(handle);
     if let Ok(mut slot) = handle.state::<PendingLink>().0.lock() {
         *slot = Some(id);
     }

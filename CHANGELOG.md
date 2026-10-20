@@ -2,6 +2,10 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- Behoben: Im Menüleisten-Betrieb erschien nach dem Start über eine Schreibtisch-Verknüpfung ein Dock-Symbol, beim Start aus der Menüleiste aber nicht. Ursache ist macOS: Öffnet ein Link die laufende App, macht macOS sie ungefragt zur Dock-App. RemoteDeskRDP prüft jetzt den tatsächlichen Zustand und entfernt das Dock-Symbol sofort wieder.
+
 ## 0.7.15 – 2026-10-20
 
 - Startet eine Schreibtisch-Verknüpfung (oder DualBeam) RemoteDeskRDP, bleibt das Programmfenster jetzt verborgen – wie beim Start aus der Menüleiste. Bisher erschien es kurz und klappte dann weg. Das Fenster kommt nur noch für eine Rückfrage oder eine Fehlermeldung hervor. Ohne Menüleisten-Betrieb holt ein Klick aufs Dock-Symbol es zurück.

@@ -58,11 +58,6 @@ struct StoredSettings {
 #[derive(Default)]
 pub(crate) struct MenuBarState(AtomicBool);
 
-/// Ob das Dock-Symbol gerade sichtbar ist. Verhindert unnötige Wechsel der
-/// Aktivierungsrichtlinie, die macOS jedes Mal mit einem Neuaufbau der
-/// Menüleiste quittiert.
-static DOCK_VISIBLE: AtomicBool = AtomicBool::new(true);
-
 /// Beschriftungen des Symbolmenüs. Wie beim Update-Menü kennt nur die
 /// Oberfläche die gewählte Sprache.
 #[derive(Debug, Clone, Deserialize)]
@@ -151,12 +146,7 @@ pub(crate) fn withhold_for_link(app: &AppHandle) {
     if !(cfg!(target_os = "macos") || menu_bar_enabled(app)) {
         return;
     }
-    if LAUNCH_WINDOW
-        .compare_exchange(LAUNCH_PENDING, LAUNCH_WITHHELD, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        refresh_dock(app);
-    }
+    let _ = LAUNCH_WINDOW.compare_exchange(LAUNCH_PENDING, LAUNCH_WITHHELD, Ordering::AcqRel, Ordering::Acquire);
 }
 
 /// Ob das Fenster seit dem Start für einen Link verborgen geblieben ist.
@@ -237,17 +227,34 @@ pub(crate) fn hide_main_window(app: &AppHandle) {
     refresh_dock(app);
 }
 
+/// Schaltet das Dock-Symbol über die Aktivierungsrichtlinie.
+///
+/// Verglichen wird mit der **tatsächlichen** Richtlinie, nicht mit einem
+/// gemerkten Wert: Öffnet eine Schreibtisch-Verknüpfung `remotedesk://…`,
+/// macht LaunchServices aus der Menüleisten-App eigenmächtig wieder eine
+/// Dock-App („changing application type to Foreground from UIElement“,
+/// gemessen im Systemprotokoll). Ein gemerkter Wert hielt das Symbol danach
+/// für verborgen und ließ es stehen. Gleiche Werte werden nicht erneut
+/// gesetzt, weil macOS jeden Wechsel mit einem Neuaufbau der Menüleiste quittiert.
 fn set_dock_visible(app: &AppHandle, visible: bool) {
-    if DOCK_VISIBLE.swap(visible, Ordering::Relaxed) == visible {
-        return;
-    }
     #[cfg(target_os = "macos")]
     {
-        let policy = if visible { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory };
-        let _ = app.set_activation_policy(policy);
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+            let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+            let (wanted, policy) = if visible {
+                (NSApplicationActivationPolicy::Regular, tauri::ActivationPolicy::Regular)
+            } else {
+                (NSApplicationActivationPolicy::Accessory, tauri::ActivationPolicy::Accessory)
+            };
+            if NSApplication::sharedApplication(mtm).activationPolicy() != wanted {
+                let _ = handle.set_activation_policy(policy);
+            }
+        });
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = app;
+    let _ = (app, visible);
 }
 
 /// Das Dock-Symbol fehlt nur im Menüleisten-Betrieb ohne offenes Fenster.
