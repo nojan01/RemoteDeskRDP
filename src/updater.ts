@@ -6,7 +6,7 @@
  * ist, und zeigt Fehler an. Download und Austausch laufen im Rust-Backend.
  */
 import { check } from "@tauri-apps/plugin-updater";
-import { activeSessionCount, appVersion, restartApplication } from "./api";
+import { activeSessionCount, appVersion, restartApplication, revealMainWindow } from "./api";
 import { confirmDialog, infoDialog } from "./dialogs";
 import { t } from "./i18n";
 
@@ -28,6 +28,9 @@ export async function checkForUpdates(interactive = false, report: UpdateReporte
       return;
     }
     report(null);
+    // Im Menüleisten-Betrieb kann das Fenster verborgen sein; die Rückfrage
+    // ginge dann unter.
+    await revealMainWindow().catch(() => {});
     const question = `${t("update.available", { version: update.version, current: update.currentVersion })}\n\n${t("update.question")}`;
     if (!(await confirmDialog(question))) { await update.close().catch(() => {}); return; }
 

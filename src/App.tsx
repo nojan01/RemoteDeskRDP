@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import RFB from "@novnc/novnc";
-import { checkLocalNetwork, closeTerminalSession, connectProfile, createDesktopShortcut, deleteProfile, forgetGatewayPassword, forgetPassword, listMonitors, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, openLocalNetworkSettings, saveGatewayPassword, savePassword, saveProfile, setUpdateMenuLabel, startVncSession, takePendingLink } from "./api";
+import { checkLocalNetwork, closeTerminalSession, connectProfile, createDesktopShortcut, deleteProfile, forgetGatewayPassword, forgetPassword, listMonitors, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, openLocalNetworkSettings, revealMainWindow, saveGatewayPassword, savePassword, saveProfile, setTrayLabels, setUpdateMenuLabel, startVncSession, takePendingLink, getAppSettings, setAppSettings, type AppSettings } from "./api";
 import { checkForUpdates, type UpdateReporter } from "./updater";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -9,7 +9,7 @@ import { emptyProfile, resolutionPresets, type ColorDepth, type DisplayMode, typ
 import { cycleLangMode, errMsg, getLangMode, langIcon, t } from "./i18n";
 import { cycleThemeMode, getThemeMode, themeIcon } from "./theme";
 import { SshTerminal } from "./SshTerminal";
-import { confirmDialog } from "./dialogs";
+import { confirmDialog, infoDialog } from "./dialogs";
 
 type Field = keyof RemoteProfile;
 
@@ -21,7 +21,7 @@ type Status = { key: string; name?: string; error?: unknown; params?: Record<str
 /** Reihenfolge der Hilfeabschnitte; die Texte stehen in den Wörterbüchern. */
 const helpSections = [
   "targets", "ports", "vnc", "ssh", "sftp", "mosh", "gateway", "udp", "reconnect", "display", "files", "folders",
-  "limits", "printer", "smartcard", "video", "microphone", "admin", "signin", "entra", "multimon", "scaling", "keyboard", "security", "localNetwork", "appearance", "dualbeam",
+  "limits", "printer", "smartcard", "video", "microphone", "admin", "signin", "entra", "multimon", "scaling", "keyboard", "security", "localNetwork", "appearance", "menubar", "dualbeam",
 ] as const;
 
 /** Häufige Windows-Tastaturlayouts (KLID). Freie Eingabe bleibt möglich. */
@@ -134,6 +134,8 @@ export function App() {
     }
   };
   const [licenseOpen, setLicenseOpen] = createSignal(false);
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [appSettings, setAppSettingsState] = createSignal<AppSettings>({ menuBar: false, launchAtLogin: false });
   const [dirty, setDirty] = createSignal(false);
   const [password, setPassword] = createSignal("");
   const [revealPassword, setRevealPassword] = createSignal(false);
@@ -268,11 +270,15 @@ export function App() {
    *  DualBeam). Unbekannte Kennungen werden gemeldet statt still verworfen.
    *  Meldet zurück, ob die Sitzung wirklich anlief – nur dann darf sich das
    *  Fenster wegklappen, sonst verschwände die Fehlermeldung mit ihm. */
-  const openById = async (id: string): Promise<RemoteProfile | null> => {
+  const openById = async (id: string, keepEditor = false): Promise<RemoteProfile | null> => {
     const profile = profiles().find((item) => item.id === id);
     if (!profile) { setStatus({ key: "state.linkUnknown" }); return null; }
-    setCurrent(profile); setSelectedId(profile.id); setDirty(false);
-    await loadSecret(profile.id);
+    // Ungespeicherte Änderungen im Editor bleiben stehen; die Verbindung
+    // nutzt ohnehin das gespeicherte Profil.
+    if (!keepEditor) {
+      setCurrent(profile); setSelectedId(profile.id); setDirty(false);
+      await loadSecret(profile.id);
+    }
     setStatus({ key: "state.connecting" });
     try {
       if (profile.protocol === "vnc") {
@@ -292,6 +298,7 @@ export function App() {
   // Die Menübeschriftung folgt der Sprache; das Menü gehört dem Hauptfenster.
   if (!isTerminalWindow && !isVncWindow) {
     createEffect(() => void setUpdateMenuLabel(t("menu.checkUpdates")).catch(() => {}));
+    createEffect(() => void setTrayLabels({ open: t("tray.open"), quit: t("tray.quit"), empty: t("tray.empty") }).catch(() => {}));
   }
 
   onMount(async () => {
@@ -331,6 +338,7 @@ export function App() {
       // ersten Mal wird nachgefragt; danach gilt das Profil als vertraut.
       const linked = profiles().find((item) => item.id === pending);
       if (linked && !readTrustedLinks().includes(linkFingerprint(linked))) {
+        await revealMainWindow().catch(() => {});
         const target = `${linked.name} (${linked.protocol.toUpperCase()} ${linked.host})`;
         if (!(await confirmDialog(t("confirm.deepLink", { name: target })))) { setStatus({ key: "state.linkDeclined" }); return; }
         if (await confirmDialog(t("confirm.deepLinkTrust", { name: linked.name }))) trustLink(linked);
@@ -339,16 +347,25 @@ export function App() {
       // DualBeam-Aufruf kann die Profilverwaltung daher stets wegklappen.
       const profile = await openById(pending);
       if (profile) await minimizeWindow();
+      else await revealMainWindow().catch(() => {});
     };
     await listen("deep-link-connect", () => void drainLink());
     await drainLink();
     // FreeRDP scheitert oft erst nach ein bis zwei Sekunden; das Backend
     // meldet solche späten Abbrüche nach, damit nicht „Verbunden“ stehen bleibt.
+    // Start aus dem Menüleisten-Symbol. Scheitert er, kommt das Fenster
+    // hervor, damit die Meldung nicht im Verborgenen steht.
+    await listen<string>("tray-connect", async (event) => {
+      const profile = await openById(event.payload, dirty());
+      if (!profile) await revealMainWindow().catch(() => {});
+    });
     await listen<{ id: string; message: string }>("session-failed", (event) => {
+      void revealMainWindow().catch(() => {});
       setStatus({ key: "state.connectFailed", error: event.payload.message });
       void recheckAfterFailure(profiles().find((item) => item.id === event.payload.id), event.payload.message);
     });
     void recheckLocalNetwork();
+    void getAppSettings().then(setAppSettingsState).catch(() => {});
 
     // Nur das Hauptfenster kümmert sich um Updates; Terminal- und VNC-Fenster
     // sind oben bereits ausgestiegen.
@@ -370,6 +387,20 @@ export function App() {
   const recheckAfterFailure = (profile: RemoteProfile | undefined, error: unknown) => {
     if (!String(error).includes("CONNECT_FAILED")) return;
     void recheckLocalNetwork(profile?.host);
+  };
+
+  /** Übernimmt eine Einstellung sofort. Scheitert das, springt der Schalter
+   *  auf den tatsächlichen Stand zurück. Dazu wird er kurz auf den gewünschten
+   *  Wert gesetzt, weil Solid sonst einen unveränderten Wert nicht ins
+   *  Kontrollkästchen zurückschreibt. */
+  const changeSettings = async (change: Partial<AppSettings>) => {
+    const wanted = { ...appSettings(), ...change };
+    try { setAppSettingsState(await setAppSettings(wanted)); }
+    catch (error) {
+      setAppSettingsState(wanted);
+      setAppSettingsState(await getAppSettings().catch(() => untrack(appSettings)));
+      await infoDialog(errMsg(error), "error");
+    }
   };
 
   const update = <K extends Field>(field: K, value: RemoteProfile[K]) => {
@@ -488,6 +519,7 @@ export function App() {
         <button onClick={newProfile}>{t("side.newProfile")}</button>
         <button class="quiet" onClick={() => setHelpOpen(true)}>{t("side.help")}</button>
         <button class="quiet" onClick={() => setLicenseOpen(true)}>{t("side.license")}</button>
+        <button class="quiet" onClick={() => setSettingsOpen(true)}>{t("side.settings")}</button>
         <div class="side-switches">
           <button class="quiet switch-btn" title={themeTitle()} aria-label={themeTitle()} onClick={cycleThemeMode}>{themeIcon(getThemeMode())}</button>
           <button class="quiet switch-btn" title={langTitle()} aria-label={langTitle()} onClick={cycleLangMode}>{langIcon(getLangMode())}</button>
@@ -646,6 +678,20 @@ export function App() {
               <h3>{t(`help.${section}.h`)}</h3>
               <div class="help-body" innerHTML={t(`help.${section}.body`)} />
             </>}</For>
+          </div>
+        </div>
+      </div>
+    </Show>
+
+    <Show when={settingsOpen()}>
+      <div class="help-sheet">
+        <div class="help-panel">
+          <header><div><span class="eyebrow">{t("settings.eyebrow")}</span><h2>{t("settings.title")}</h2></div><button onClick={() => setSettingsOpen(false)}>{t("help.close")}</button></header>
+          <div class="help-content settings-content">
+            <Toggle label={t("settings.menuBar")} checked={appSettings().menuBar} onChange={(value) => void changeSettings({ menuBar: value })} />
+            <p>{t("settings.menuBarHint")}</p>
+            <Toggle label={t("settings.launchAtLogin")} checked={appSettings().launchAtLogin} onChange={(value) => void changeSettings({ launchAtLogin: value })} />
+            <p>{t("settings.launchAtLoginHint")}</p>
           </div>
         </div>
       </div>

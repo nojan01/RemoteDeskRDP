@@ -2,6 +2,13 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- Neu: **⚙ Einstellungen** unten links mit zwei Optionen, beide standardmäßig aus:
+  - „In der Menüleiste weiterlaufen“: Das Schließen des Fensters beendet die App nicht mehr, sie bleibt als Symbol in der Menüleiste. Laufende Sitzungen bleiben dabei offen. Das Symbolmenü startet gespeicherte Verbindungen direkt und öffnet die Verwaltung. Ohne offenes Fenster verschwindet das Dock-Symbol.
+  - „Bei der Anmeldung starten“: Ein Anmeldeobjekt startet RemoteDeskRDP nach der Anmeldung am Mac. Im Menüleisten-Betrieb startet die App dabei ohne Fenster.
+- Hilfe: neuer Abschnitt „Menüleiste und Start bei der Anmeldung“.
+
 ## 0.7.12 – 2026-10-18
 
 - Behoben: Beim Start einer RDP-Sitzung wurde der ganze Mac-Bildschirm kurz schwarz. Der SDL-Client vermaß die Monitore über ein kurz im Vollbild geöffnetes Fenster, das unter macOS in einen eigenen Space wechselte. Die Werte kommen jetzt direkt vom Display.

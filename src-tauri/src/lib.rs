@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 
+mod menubar;
+
 // Die App heisst seit der Umbenennung RemoteDeskRDP. Die folgenden drei
 // Bezeichner behalten trotzdem den alten Namen: An ihnen haengen der
 // Profilordner, die Kennwoerter im Schluesselbund und die Umgebungsvariable
@@ -688,8 +690,14 @@ fn list_profiles(store: tauri::State<'_, ProfileStore>) -> Result<Vec<RemoteProf
 }
 
 #[tauri::command(async)]
-fn save_profile(profile: RemoteProfile, store: tauri::State<'_, ProfileStore>) -> Result<RemoteProfile, String> {
-    let _guard = lock_profiles(&store)?;
+fn save_profile(app: tauri::AppHandle, profile: RemoteProfile, store: tauri::State<'_, ProfileStore>) -> Result<RemoteProfile, String> {
+    let saved = save_profile_locked(profile, &store)?;
+    menubar::sync_tray(&app);
+    Ok(saved)
+}
+
+fn save_profile_locked(profile: RemoteProfile, store: &ProfileStore) -> Result<RemoteProfile, String> {
+    let _guard = lock_profiles(store)?;
     if matches!(profile.protocol, Protocol::S3 | Protocol::Swift) {
         return Err("err.objectStorageMoved".into());
     }
@@ -705,15 +713,18 @@ fn save_profile(profile: RemoteProfile, store: tauri::State<'_, ProfileStore>) -
 }
 
 #[tauri::command(async)]
-fn delete_profile(id: String, store: tauri::State<'_, ProfileStore>) -> Result<(), String> {
+fn delete_profile(app: tauri::AppHandle, id: String, store: tauri::State<'_, ProfileStore>) -> Result<(), String> {
     keychain_account(&id)?;
-    let _guard = lock_profiles(&store)?;
-    let mut profiles = read_profiles()?;
-    profiles.retain(|profile| profile.id != id);
-    write_profiles(&profiles)?;
+    {
+        let _guard = lock_profiles(&store)?;
+        let mut profiles = read_profiles()?;
+        profiles.retain(|profile| profile.id != id);
+        write_profiles(&profiles)?;
+    }
     // Erst nach dem erfolgreichen Schreiben: schlägt das Schreiben fehl, bleibt
     // das Profil bestehen und soll sein Kennwort behalten.
     forget_passwords(&id);
+    menubar::sync_tray(&app);
     Ok(())
 }
 
@@ -2546,6 +2557,11 @@ fn take_pending_link(state: tauri::State<'_, PendingLink>) -> Option<String> {
 /// fuer die Sitzung. Eine Meldung dafuer waere nur laestig.
 #[tauri::command]
 fn minimize_window(window: tauri::Window) {
+    // Im Menüleisten-Betrieb ist der Platz des Fensters das Symbol oben.
+    if menubar::menu_bar_enabled(window.app_handle()) {
+        menubar::hide_main_window(window.app_handle());
+        return;
+    }
     // Tauris `minimize()` meldet auf macOS Ok, klappt das Fenster aber nicht
     // zuverlaessig ein - gemessen blieb `is_minimized()` false, das Fenster
     // stand weiter auf dem Schirm. Auch AppKits `miniaturize` greift nur
@@ -2623,7 +2639,9 @@ fn remember_link(handle: &tauri::AppHandle, url: &tauri::Url) {
         *slot = Some(id);
     }
     let _ = handle.emit("deep-link-connect", ());
-    if let Some(window) = handle.get_webview_window("main") {
+    // Ein im Menüleisten-Betrieb verborgenes Fenster bleibt verborgen; die
+    // Oberfläche holt es nur hervor, wenn sie nachfragen muss.
+    if let Some(window) = handle.get_webview_window("main").filter(|window| window.is_visible().unwrap_or(false)) {
         let _ = window.set_focus();
     }
 }
@@ -2946,7 +2964,7 @@ fn install_update_menu(app: &tauri::App) -> tauri::Result<()> {
     *app.state::<UpdateMenuItem>().0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(item);
     app.on_menu_event(|app, event| {
         if event.id() == CHECK_UPDATES_MENU_ID {
-            restore_main_window(app);
+            menubar::show_main_window(app);
             let _ = app.emit_to("main", "remotedesk://check-updates", ());
         }
     });
@@ -2963,7 +2981,22 @@ pub fn run() {
         .manage(SshSessions(Mutex::new(HashMap::new())))
         .manage(ProfileStore::default())
         .manage(UpdateMenuItem::default())
+        .manage(menubar::MenuBarState::default())
+        .manage(menubar::TrayLabelState::default())
+        .on_window_event(menubar::on_window_event)
         .setup(|app| {
+            // Das Hauptfenster startet unsichtbar (tauri.conf.json). Gezeigt wird
+            // es immer, außer beim Anmeldestart im Menüleisten-Betrieb.
+            menubar::load(app.handle());
+            menubar::login_item::refresh(app.handle());
+            if menubar::start_hidden(app.handle()) {
+                menubar::refresh_dock(app.handle());
+            } else if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            menubar::sync_tray(app.handle());
+            app.on_menu_event(|app, event| menubar::on_menu_event(app, event.id().as_ref()));
             #[cfg(target_os = "macos")]
             {
                 install_update_menu(app)?;
@@ -2997,13 +3030,13 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, create_desktop_shortcut, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, active_session_count, restart_application, list_monitors, check_local_network, open_local_network_settings])
+        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, create_desktop_shortcut, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, menubar::get_app_settings, menubar::set_app_settings, menubar::set_tray_labels, menubar::reveal_main_window, active_session_count, restart_application, list_monitors, check_local_network, open_local_network_settings])
         .build(tauri::generate_context!())
         .expect("Fehler beim Start von RemoteDeskRDP");
     app.run(|app, event| {
             #[cfg(target_os = "macos")]
             if matches!(event, tauri::RunEvent::Reopen { .. }) {
-                restore_main_window(app);
+                menubar::show_main_window(app);
             }
             // Beim Beenden der App sollen keine verwaisten FreeRDP-Fenster
             // und SSH-Prozesse zurückbleiben.
