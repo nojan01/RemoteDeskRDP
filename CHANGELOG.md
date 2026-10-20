@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.15 – 2026-10-20
 
 - Startet eine Schreibtisch-Verknüpfung (oder DualBeam) RemoteDeskRDP, bleibt das Programmfenster jetzt verborgen – wie beim Start aus der Menüleiste. Bisher erschien es kurz und klappte dann weg. Das Fenster kommt nur noch für eine Rückfrage oder eine Fehlermeldung hervor. Ohne Menüleisten-Betrieb holt ein Klick aufs Dock-Symbol es zurück.
 
