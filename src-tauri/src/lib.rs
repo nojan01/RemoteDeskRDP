@@ -1616,9 +1616,43 @@ fn connect_rdp(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), St
             return Ok(());
         }
     }
-    let outcome = spawn_session(app, profile);
-    if outcome.is_err() {
+    let started = std::time::Instant::now();
+    let outcome = spawn_session(app, profile, true);
+    if let Err(message) = &outcome {
         // Anmeldung zurücknehmen, sonst bliebe das Profil dauerhaft gesperrt.
+        app.state::<Sessions>().release(&profile.id);
+        if is_transient_network_failure(message, started.elapsed()) {
+            return retry_rdp(app, profile);
+        }
+    }
+    outcome
+}
+
+/// Ob ein Verbindungsfehler einen stillen zweiten Versuch verdient.
+///
+/// Nach jedem Update hält macOS (nehelper) für die Freigabe „Lokales
+/// Netzwerk“ noch die Kennung der alten Programmversion. Der erste Zugriff
+/// auf eine lokale Adresse wird deshalb einmal mit EHOSTUNREACH abgewiesen;
+/// FreeRDP meldet daraufhin nach ein bis zwei Sekunden CONNECT_FAILED.
+/// Gleich danach hat macOS den Zwischenspeicher erneuert und der nächste
+/// Versuch gelingt – gemessen im Protokoll von nehelper. Ein später
+/// Abbruch (etwa eine echte Zeitüberschreitung) wird nicht wiederholt.
+fn is_transient_network_failure(message: &str, elapsed: Duration) -> bool {
+    elapsed < Duration::from_secs(5) && message.contains("ERRCONNECT_CONNECT_FAILED")
+}
+
+/// Zweiter und letzter Versuch nach `is_transient_network_failure`. Die
+/// Probe wartet, bis macOS die Freigabe wieder erteilt.
+fn retry_rdp(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), String> {
+    use tauri::Manager;
+    let _ = check_local_network(Some(profile.host.clone()));
+    match app.state::<Sessions>().claim(&profile.id) {
+        Ok(()) => {}
+        // Der Anwender hat inzwischen selbst neu verbunden.
+        Err(_) => return Ok(()),
+    }
+    let outcome = spawn_session(app, profile, false);
+    if outcome.is_err() {
         app.state::<Sessions>().release(&profile.id);
     }
     outcome
@@ -1726,8 +1760,11 @@ async fn start_vnc_session(app: tauri::AppHandle, profile: RemoteProfile) -> Res
     Ok(VncEndpoint { websocket_url: format!("ws://127.0.0.1:{port}/?token={token}") })
 }
 
-fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), String> {
+/// `retry`: Darf ein schnelles CONNECT_FAILED noch einen zweiten Versuch
+/// auslösen (siehe `is_transient_network_failure`)?
+fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile, retry: bool) -> Result<(), String> {
     use tauri::Manager;
+    let started = std::time::Instant::now();
     let binary = rdp_executable(app)?;
     let backend = backend_kind(&binary);
     if backend == Backend::X11 {
@@ -1851,6 +1888,7 @@ fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), 
         return Err(message);
     }
     let id = profile.id.clone();
+    let retry_profile = retry.then(|| profile.clone());
     // Verhindert einen Zombie-Prozess, sobald die Sitzung beendet wird, und
     // gibt das Profil für einen neuen Verbindungsversuch wieder frei.
     let handle = app.clone();
@@ -1878,6 +1916,15 @@ fn spawn_session(app: &tauri::AppHandle, profile: &RemoteProfile) -> Result<(), 
         // Erst nach der Freigabe, damit ein Klick auf „Verbinden“ aus der
         // Fehlermeldung heraus sofort wieder möglich ist.
         if let Some(message) = late_failure(&log, &status) {
+            let message = match retry_profile {
+                Some(profile) if is_transient_network_failure(&message, started.elapsed()) => {
+                    match retry_rdp(&handle, &profile) {
+                        Ok(()) => return,
+                        Err(again) => again,
+                    }
+                }
+                _ => message,
+            };
             let _ = handle.emit("session-failed", SessionFailed { id, message });
         }
     });
@@ -3368,6 +3415,17 @@ mod tests {
         for url in ["https://login.microsoftonline.com.evil.example/", "https://example.com/", "https://notlogin.live.com/"] {
             assert!(!entra::is_login_host(&url.parse().unwrap()), "{url}");
         }
+    }
+
+    #[test]
+    fn only_quick_connect_failures_are_retried() {
+        let connect = "err.freerdpExited\u{1f}[get_next_addrinfo]: ERRCONNECT_CONNECT_FAILED [0x00020006]";
+        assert!(is_transient_network_failure(connect, Duration::from_millis(1500)));
+        assert!(!is_transient_network_failure(connect, Duration::from_secs(20)));
+        let auth = "err.freerdpExited\u{1f}ERRCONNECT_LOGON_FAILURE [0x00020014]";
+        assert!(!is_transient_network_failure(auth, Duration::from_millis(1500)));
+        let cancelled = "ERRCONNECT_CONNECT_CANCELLED [0x0002000B]";
+        assert!(!is_transient_network_failure(cancelled, Duration::from_millis(500)));
     }
 
     #[test]
