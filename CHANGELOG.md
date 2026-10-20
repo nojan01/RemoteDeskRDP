@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.13 – 2026-10-20
 
 - Neu: **⚙ Einstellungen** unten links mit zwei Optionen, beide standardmäßig aus:
   - „In der Menüleiste weiterlaufen“: Das Schließen des Fensters beendet die App nicht mehr, sie bleibt als Symbol in der Menüleiste. Laufende Sitzungen bleiben dabei offen. Das Symbolmenü startet gespeicherte Verbindungen direkt und öffnet die Verwaltung. Ohne offenes Fenster verschwindet das Dock-Symbol.
