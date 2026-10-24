@@ -38,12 +38,13 @@ export function SshTerminal(props: { profile: RemoteProfile }) {
       if (event.payload.profileId === props.profile.id) instance.write(new Uint8Array(event.payload.data));
     });
     unlistenEnded = await listen<{ profileId: string }>("ssh-ended", (event) => {
+      if (event.payload.profileId !== props.profile.id) return;
       const isFinishedX11App = props.profile.protocol === "ssh"
         && props.profile.x11Forwarding
         && Boolean(props.profile.x11Command.trim());
-      if (event.payload.profileId !== props.profile.id) return;
       ended = true;
-      instance.writeln(`\r\n${t("terminal.ended")}`);
+      const isCommand = props.profile.protocol === "ssh" && !props.profile.x11Forwarding && Boolean(props.profile.sshCommand.trim());
+      instance.writeln(`\r\n${t(isCommand ? "ssh.commandEnded" : "terminal.ended")}`);
       if (isFinishedX11App) {
         // Der SSH-Prozess ist bereits beendet. Wir schließen nun auch dessen
         // minimiertes Terminalfenster, damit die nächste X11-Verbindung eine

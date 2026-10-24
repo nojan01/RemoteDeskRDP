@@ -561,6 +561,9 @@ export function App() {
           <Show when={current().protocol === "ssh"}>
             <div class="x11-settings">
               <Toggle label={t("ssh.x11.enable")} checked={current().x11Forwarding} onChange={(value) => update("x11Forwarding", value)} />
+              <Show when={!current().x11Forwarding}>
+                <label class="x11-command"><span>{t("ssh.command")}</span><input value={current().sshCommand} onInput={(event) => update("sshCommand", event.currentTarget.value)} placeholder={t("ssh.commandPlaceholder")} /><small>{t("ssh.commandNote")}</small></label>
+              </Show>
               <Show when={current().x11Forwarding}>
                 <label class="x11-command"><span>{t("ssh.x11.command")}</span><input value={current().x11Command} onInput={(event) => update("x11Command", event.currentTarget.value)} placeholder={t("ssh.x11.commandPlaceholder")} /><small>{t("ssh.x11.commandNote")}</small></label>
                 <Toggle label={t("ssh.x11.closeXquartz")} checked={current().x11CloseXquartz} onChange={(value) => update("x11CloseXquartz", value)} />
