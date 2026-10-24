@@ -563,6 +563,13 @@ export function App() {
               <Toggle label={t("ssh.x11.enable")} checked={current().x11Forwarding} onChange={(value) => update("x11Forwarding", value)} />
               <Show when={!current().x11Forwarding}>
                 <label class="x11-command"><span>{t("ssh.command")}</span><input value={current().sshCommand} onInput={(event) => update("sshCommand", event.currentTarget.value)} placeholder={t("ssh.commandPlaceholder")} /><small>{t("ssh.commandNote")}</small></label>
+                <Show when={current().sshCommand.trim()}>
+                  <Toggle label={t("ssh.commandDetached")} checked={current().sshCommandDetached} onChange={(value) => update("sshCommandDetached", value)} />
+                  <Show when={current().sshCommandDetached}>
+                    <Toggle label={t("ssh.closeAfterLaunch")} checked={current().sshCloseAfterLaunch} onChange={(value) => update("sshCloseAfterLaunch", value)} />
+                    <p>{t("ssh.commandDetachedNote")}</p>
+                  </Show>
+                </Show>
               </Show>
               <Show when={current().x11Forwarding}>
                 <label class="x11-command"><span>{t("ssh.x11.command")}</span><input value={current().x11Command} onInput={(event) => update("x11Command", event.currentTarget.value)} placeholder={t("ssh.x11.commandPlaceholder")} /><small>{t("ssh.x11.commandNote")}</small></label>

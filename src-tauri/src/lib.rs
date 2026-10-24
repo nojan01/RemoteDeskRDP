@@ -77,6 +77,12 @@ struct RemoteProfile {
     /// Optionaler Serverbefehl für SSH ohne X11; alte Profile öffnen eine Shell.
     #[serde(default)]
     ssh_command: String,
+    /// Startet einen Serverprozess ohne Remote-PTY und mit umgeleiteten Streams.
+    #[serde(default)]
+    ssh_command_detached: bool,
+    /// Erst nach erfolgreicher Übergabe schließen; SSH-Fehler bleiben sichtbar.
+    #[serde(default)]
+    ssh_close_after_launch: bool,
     /// X11-Fenster werden nur für reguläre SSH-Sitzungen weitergeleitet.
     #[serde(default)]
     x11_forwarding: bool,
@@ -2291,7 +2297,7 @@ struct SshData { profile_id: String, data: Vec<u8> }
 /// dann keinen erneuten Verbindungsstart mehr.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SshEnded { profile_id: String }
+struct SshEnded { profile_id: String, success: bool }
 
 fn ssh_target(profile: &RemoteProfile) -> String {
     if profile.username.trim().is_empty() { profile.host.trim().to_string() }
@@ -2365,18 +2371,48 @@ fn xquartz_display() -> Result<String, String> {
     Err("err.xquartzNotInstalled".into())
 }
 
+fn detached_ssh_command(profile: &RemoteProfile) -> bool {
+    profile.protocol == Protocol::Ssh && !profile.x11_forwarding
+        && profile.ssh_command_detached && !profile.ssh_command.trim().is_empty()
+}
+
+fn quote_posix_shell(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+/// Läuft ausschließlich auf dem Server. Ohne Remote-PTY, mit ignoriertem HUP
+/// und eigenen Streams bleibt der gestartete Prozess vom SSH-Kanal unabhängig.
+fn detached_remote_command(remote_command: &str) -> String {
+    let script = format!(r#"umask 077
+command -v nohup >/dev/null || exit 127
+log="$HOME/.remotedeskrdp-command.log"
+: >> "$log" || exit 1
+nohup sh -c {} < /dev/null >> "$log" 2>&1 &
+pid=$!
+printf 'PID: %s\nLog: %s\n' "$pid" "$log"
+"#, quote_posix_shell(remote_command));
+    // Auch bei einer anderen Login-Shell wird das Startskript als POSIX-sh
+    // ausgeführt; doppelte Anführungszeichen und Shell-Syntax bleiben erhalten.
+    format!("sh -c {}", quote_posix_shell(&script))
+}
+
 /// Der Befehl wird als ein Argument nach dem Ziel an SSH übergeben.
 /// Die entfernte Shell wertet ihn aus; lokal wird keine Shell gestartet.
 fn ssh_command(profile: &RemoteProfile) -> CommandBuilder {
     let mut command = CommandBuilder::new("/usr/bin/ssh");
-    command.arg("-tt");
+    let detached = detached_ssh_command(profile);
+    command.arg(if detached { "-T" } else { "-tt" });
     command.arg(if profile.x11_forwarding { "-X" } else { "-x" });
     command.arg("-p");
     command.arg(profile.ssh_port.to_string());
     command.arg(ssh_target(profile));
     let remote_command = if profile.x11_forwarding { &profile.x11_command } else { &profile.ssh_command };
     if !remote_command.trim().is_empty() {
-        command.arg(remote_command.trim());
+        command.arg(if detached {
+            detached_remote_command(remote_command.trim())
+        } else {
+            remote_command.trim().to_string()
+        });
     }
     command
 }
@@ -2461,7 +2497,7 @@ fn start_ssh_session_blocking(app: &tauri::AppHandle, label: String, profile: Re
             // Ausgabe (womöglich mit Kennwortabfragen) gar nicht erst sehen.
             let _ = output.emit_to(label.as_str(), "ssh-data", SshData { profile_id: id.clone(), data: buffer[..count].to_vec() });
         }
-        let _ = child.wait();
+        let success = child.wait().is_ok_and(|status| status.success());
         let ssh_sessions = state.state::<SshSessions>();
         let mut sessions = ssh_sessions.lock();
         let session_ended = if sessions.get(&id).is_some_and(|session| session.as_ref().is_some_and(|session| session.id == session_id)) {
@@ -2474,7 +2510,7 @@ fn start_ssh_session_blocking(app: &tauri::AppHandle, label: String, profile: Re
         // mit derselben Profil-ID niemals beenden.
         if !session_ended { return; }
         if close_xquartz_on_exit && last_x11_session { stop_xquartz(); }
-        let _ = output.emit_to(label.as_str(), "ssh-ended", SshEnded { profile_id: id });
+        let _ = output.emit_to(label.as_str(), "ssh-ended", SshEnded { profile_id: id, success });
     });
     Ok(())
 }
@@ -3337,6 +3373,8 @@ mod tests {
             ssh_port: DEFAULT_SSH_PORT,
             ssh_terminal: DEFAULT_SSH_TERMINAL.into(),
             ssh_command: String::new(),
+            ssh_command_detached: false,
+            ssh_close_after_launch: false,
             x11_forwarding: false,
             x11_command: String::new(),
             x11_close_xquartz: false,
@@ -3913,17 +3951,101 @@ mod tests {
     }
 
     #[test]
+    fn detached_commands_disable_remote_pty_and_do_not_affect_shell_or_x11() {
+        let mut ssh = profile();
+        ssh.protocol = Protocol::Ssh;
+        ssh.ssh_command = r#"/usr/lib/virtualbox/VBoxHeadless --comment "Windows 11" --startvm "{1929160d-d96e-448e-ba2c-039b3303a12f}""#.into();
+        ssh.ssh_command_detached = true;
+        ssh.ssh_close_after_launch = true;
+        let command = ssh_command(&ssh);
+        assert_eq!(command.get_argv()[1], "-T");
+        assert_eq!(command.get_argv()[2], "-x");
+        assert_eq!(command.get_argv().last().unwrap().to_str().unwrap(), detached_remote_command(&ssh.ssh_command));
+
+        ssh.ssh_command.clear();
+        assert!(!detached_ssh_command(&ssh));
+        assert_eq!(ssh_command(&ssh).get_argv()[1], "-tt");
+        assert_eq!(ssh_command(&ssh).get_argv().len(), 6);
+        ssh.ssh_command = "uptime".into();
+        ssh.x11_forwarding = true;
+        ssh.x11_command = "gedit".into();
+        assert!(!detached_ssh_command(&ssh));
+        assert_eq!(ssh_command(&ssh).get_argv()[1], "-tt");
+        assert_eq!(ssh_command(&ssh).get_argv().last().unwrap(), "gedit");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detached_process_survives_launch_shell_exit_and_hangup_with_quoted_arguments() {
+        let home = std::env::temp_dir().join(format!("remotedeskrdp-detach-{}-{}-user's home", std::process::id(), SSH_SESSION_SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir_all(&home).unwrap();
+        // Die Kindaufgabe wartet auf ein Signal des Tests, das erst NACH dem
+        // Ende der Start-Shell geschrieben wird. Geerbte SSH-Streams würden
+        // output() blockieren und der Test schlüge am Zeitlimit der Aufgabe fehl.
+        let remote_command = r#": > "$HOME/ready"; i=0; while [ ! -f "$HOME/release" ]; do i=$((i + 1)); [ "$i" -lt 300 ] || exit 42; sleep 0.01; done; printf '%s\n' "Windows 11" "{1929160d-d96e-448e-ba2c-039b3303a12f}" 'literal $HOME; $(false)' "user's VM" > "$HOME/result"; printf '%s\n' 'VM output'; printf '%s\n' 'VM error' >&2"#;
+        let output = Command::new("/bin/sh").args(["-c", &detached_remote_command(remote_command)])
+            .env("HOME", &home).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("Log: "));
+        let pid = stdout.lines().find_map(|line| line.strip_prefix("PID: ")).unwrap();
+        let wait_for = |name: &str| {
+            for _ in 0..200 {
+                if home.join(name).exists() { return; }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("Detached task did not produce {name}");
+        };
+        wait_for("ready");
+        assert!(!home.join("result").exists());
+        assert!(Command::new("/bin/kill").args(["-HUP", pid]).status().unwrap().success());
+        fs::write(home.join("release"), "").unwrap();
+        wait_for("result");
+        // result wird vor den Logzeilen geschrieben, deshalb auf die komplette
+        // Ausgabe warten, bevor wir das temporäre Verzeichnis entfernen.
+        let mut log = String::new();
+        for _ in 0..200 {
+            log = fs::read_to_string(home.join(".remotedeskrdp-command.log")).unwrap();
+            if log.contains("VM error") { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(fs::read_to_string(home.join("result")).unwrap(), "Windows 11\n{1929160d-d96e-448e-ba2c-039b3303a12f}\nliteral $HOME; $(false)\nuser's VM\n");
+        assert!(log.contains("VM output"));
+        assert!(log.contains("VM error"));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detached_launch_reports_log_setup_failure_instead_of_starting() {
+        let missing_home = std::env::temp_dir().join(format!("remotedeskrdp-missing-{}-{}", std::process::id(), SSH_SESSION_SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        let output = Command::new("/bin/sh").args(["-c", &detached_remote_command("printf should-not-run")])
+            .env("HOME", missing_home).output().unwrap();
+        assert!(!output.status.success());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("PID:"));
+        assert!(!output.stderr.is_empty());
+    }
+
+    #[test]
     fn ssh_command_is_validated_and_survives_profile_roundtrip() {
         let mut ssh = profile();
         ssh.protocol = Protocol::Ssh;
         ssh.ssh_command = "htop".into();
         assert!(validate_profile(&ssh).is_ok());
+        ssh.ssh_command_detached = true;
+        ssh.ssh_close_after_launch = true;
         let mut stored = serde_json::to_value(&ssh).unwrap();
         let loaded: RemoteProfile = serde_json::from_value(stored.clone()).unwrap();
         assert_eq!(loaded.ssh_command, "htop");
+        assert!(loaded.ssh_command_detached);
+        assert!(loaded.ssh_close_after_launch);
         stored.as_object_mut().unwrap().remove("sshCommand");
+        stored.as_object_mut().unwrap().remove("sshCommandDetached");
+        stored.as_object_mut().unwrap().remove("sshCloseAfterLaunch");
         let legacy: RemoteProfile = serde_json::from_value(stored).unwrap();
         assert!(legacy.ssh_command.is_empty());
+        assert!(!legacy.ssh_command_detached);
+        assert!(!legacy.ssh_close_after_launch);
 
         ssh.ssh_command = "uptime\nwhoami".into();
         assert_eq!(validate_profile(&ssh).unwrap_err(), "err.argumentLineBreak");

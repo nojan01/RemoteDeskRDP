@@ -24,6 +24,8 @@ export type RemoteProfile = {
   sshPort: number;
   sshTerminal: string;
   sshCommand: string;
+  sshCommandDetached: boolean;
+  sshCloseAfterLaunch: boolean;
   x11Forwarding: boolean;
   x11Command: string;
   x11CloseXquartz: boolean;
@@ -91,6 +93,8 @@ export const emptyProfile = (): RemoteProfile => ({
   sshPort: 22,
   sshTerminal: "xterm-256color",
   sshCommand: "",
+  sshCommandDetached: false,
+  sshCloseAfterLaunch: false,
   x11Forwarding: false,
   x11Command: "",
   x11CloseXquartz: false,

@@ -2,6 +2,14 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## 0.7.18 – 2026-10-24
+
+- SSH-Befehle optional im Hintergrund starten und die SSH-Verbindung nach der
+  Übergabe schließen. Dauerhafte Prozesse wie VBoxHeadless laufen unabhängig
+  vom Terminal weiter; Ausgabe und Fehler werden auf dem Server protokolliert.
+- Das SSH-Fenster kann nach erfolgreicher Übergabe automatisch geschlossen
+  werden. SSH-Fehler bleiben sichtbar.
+
 ## 0.7.17 – 2026-10-24
 
 - Neu: Linux-Befehle in SSH-Profilen automatisch ohne X11 und XQuartz ausführen.
