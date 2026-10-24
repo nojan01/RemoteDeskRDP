@@ -37,18 +37,18 @@ export function SshTerminal(props: { profile: RemoteProfile }) {
     unlistenData = await listen<{ profileId: string; data: number[] }>("ssh-data", (event) => {
       if (event.payload.profileId === props.profile.id) instance.write(new Uint8Array(event.payload.data));
     });
-    unlistenEnded = await listen<{ profileId: string }>("ssh-ended", (event) => {
+    unlistenEnded = await listen<{ profileId: string; success: boolean }>("ssh-ended", (event) => {
       if (event.payload.profileId !== props.profile.id) return;
       const isFinishedX11App = props.profile.protocol === "ssh"
         && props.profile.x11Forwarding
         && Boolean(props.profile.x11Command.trim());
       ended = true;
       const isCommand = props.profile.protocol === "ssh" && !props.profile.x11Forwarding && Boolean(props.profile.sshCommand.trim());
-      instance.writeln(`\r\n${t(isCommand ? "ssh.commandEnded" : "terminal.ended")}`);
-      if (isFinishedX11App) {
-        // Der SSH-Prozess ist bereits beendet. Wir schließen nun auch dessen
-        // minimiertes Terminalfenster, damit die nächste X11-Verbindung eine
-        // neue PTY starten kann statt ein altes Dock-Fenster zu reaktivieren.
+      const detached = isCommand && props.profile.sshCommandDetached;
+      instance.writeln(`\r\n${t(detached && event.payload.success ? "ssh.commandDetachedEnded" : isCommand ? "ssh.commandEnded" : "terminal.ended")}`);
+      if (isFinishedX11App || (detached && props.profile.sshCloseAfterLaunch && event.payload.success)) {
+        // Der SSH-Prozess ist beendet. Bei Hintergrundbefehlen nur nach
+        // erfolgreicher Übergabe schließen; Anmelde-/Startfehler bleiben sichtbar.
         void closeTerminalSession(props.profile.id).catch(() => undefined);
       }
     });
