@@ -2,6 +2,11 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## 0.7.17 – 2026-10-24
+
+- Neu: Linux-Befehle in SSH-Profilen automatisch ohne X11 und XQuartz ausführen.
+  Die Ausgabe bleibt nach Befehlsende in der integrierten Konsole sichtbar.
+
 ## 0.7.16 – 2026-10-20
 
 - Behoben: Im Menüleisten-Betrieb erschien nach dem Start über eine Schreibtisch-Verknüpfung ein Dock-Symbol, beim Start aus der Menüleiste aber nicht. Ursache ist macOS: Öffnet ein Link die laufende App, macht macOS sie ungefragt zur Dock-App. RemoteDeskRDP prüft jetzt den tatsächlichen Zustand und entfernt das Dock-Symbol sofort wieder.

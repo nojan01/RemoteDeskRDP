@@ -23,6 +23,7 @@ export type RemoteProfile = {
   vncPort: number;
   sshPort: number;
   sshTerminal: string;
+  sshCommand: string;
   x11Forwarding: boolean;
   x11Command: string;
   x11CloseXquartz: boolean;
@@ -89,6 +90,7 @@ export const emptyProfile = (): RemoteProfile => ({
   vncPort: 5900,
   sshPort: 22,
   sshTerminal: "xterm-256color",
+  sshCommand: "",
   x11Forwarding: false,
   x11Command: "",
   x11CloseXquartz: false,

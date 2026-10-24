@@ -22,6 +22,8 @@ macOS Keychain; profile files never contain passwords.
   optional Mosh support.
 - Microsoft Entra ID sign-in with the Microsoft login page in its own window,
   and multi-monitor sessions with monitor detection.
+- Saved Linux commands over SSH without X11 or XQuartz; command output stays
+  visible in the integrated terminal.
 - RD Gateway, dynamic resolution, clipboard and file transfer, folder, printer
   and smartcard redirection, audio and H.264 video acceleration.
 - Drag and drop between Finder and compatible RDP sessions.

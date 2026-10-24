@@ -74,6 +74,9 @@ struct RemoteProfile {
     ssh_port: u16,
     #[serde(default = "default_ssh_terminal")]
     ssh_terminal: String,
+    /// Optionaler Serverbefehl für SSH ohne X11; alte Profile öffnen eine Shell.
+    #[serde(default)]
+    ssh_command: String,
     /// X11-Fenster werden nur für reguläre SSH-Sitzungen weitergeleitet.
     #[serde(default)]
     x11_forwarding: bool,
@@ -439,6 +442,10 @@ fn validate_profile(profile: &RemoteProfile) -> Result<(), String> {
         if terminal.is_empty() || terminal.len() > 64 || !terminal.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-')) {
             return Err("err.sshTerminalInvalid".into());
         }
+    }
+    ensure_single_line(&profile.ssh_command)?;
+    if profile.ssh_command.len() > 1024 {
+        return Err("err.sshCommandInvalid".into());
     }
     ensure_single_line(&profile.x11_command)?;
     if profile.x11_command.len() > 1024 {
@@ -2358,6 +2365,22 @@ fn xquartz_display() -> Result<String, String> {
     Err("err.xquartzNotInstalled".into())
 }
 
+/// Der Befehl wird als ein Argument nach dem Ziel an SSH übergeben.
+/// Die entfernte Shell wertet ihn aus; lokal wird keine Shell gestartet.
+fn ssh_command(profile: &RemoteProfile) -> CommandBuilder {
+    let mut command = CommandBuilder::new("/usr/bin/ssh");
+    command.arg("-tt");
+    command.arg(if profile.x11_forwarding { "-X" } else { "-x" });
+    command.arg("-p");
+    command.arg(profile.ssh_port.to_string());
+    command.arg(ssh_target(profile));
+    let remote_command = if profile.x11_forwarding { &profile.x11_command } else { &profile.ssh_command };
+    if !remote_command.trim().is_empty() {
+        command.arg(remote_command.trim());
+    }
+    command
+}
+
 /// Asynchron mit Blockier-Thread, weil das Warten auf XQuartz bis zu fünf
 /// Sekunden dauern kann und sonst den Hauptthread anhielte.
 #[tauri::command]
@@ -2388,18 +2411,7 @@ fn start_ssh_session_blocking(app: &tauri::AppHandle, label: String, profile: Re
         None
     };
     let mut command = match profile.protocol {
-        Protocol::Ssh => {
-            let mut command = CommandBuilder::new("/usr/bin/ssh");
-            command.arg("-tt");
-            if profile.x11_forwarding {
-                command.arg("-X");
-            }
-            command.arg("-p"); command.arg(profile.ssh_port.to_string()); command.arg(ssh_target(&profile));
-            if profile.x11_forwarding && !profile.x11_command.trim().is_empty() {
-                command.arg(profile.x11_command.trim());
-            }
-            command
-        }
+        Protocol::Ssh => ssh_command(&profile),
         Protocol::Sftp => {
             let mut command = CommandBuilder::new("/usr/bin/sftp");
             command.arg("-P"); command.arg(profile.ssh_port.to_string()); command.arg(ssh_target(&profile));
@@ -3324,6 +3336,7 @@ mod tests {
             vnc_port: DEFAULT_VNC_PORT,
             ssh_port: DEFAULT_SSH_PORT,
             ssh_terminal: DEFAULT_SSH_TERMINAL.into(),
+            ssh_command: String::new(),
             x11_forwarding: false,
             x11_command: String::new(),
             x11_close_xquartz: false,
@@ -3875,6 +3888,47 @@ mod tests {
 
         ssh.ssh_terminal.clear();
         assert_eq!(validate_profile(&ssh).unwrap_err(), "err.sshTerminalInvalid");
+    }
+
+    #[test]
+    fn ssh_command_runs_remotely_without_x11_and_preserves_shell_syntax() {
+        let mut ssh = profile();
+        ssh.protocol = Protocol::Ssh;
+        ssh.ssh_port = 2222;
+        ssh.username = "alice".into();
+        ssh.host = "linux.example.test".into();
+        ssh.ssh_command = " printf '%s\\n' \"$(uname -s)\" && uptime ".into();
+        ssh.x11_command = "gedit".into();
+        let command = ssh_command(&ssh);
+        let args: Vec<_> = command.get_argv().iter().map(|arg| arg.to_str().unwrap()).collect();
+        assert_eq!(args, vec!["/usr/bin/ssh", "-tt", "-x", "-p", "2222", "alice@linux.example.test", ssh.ssh_command.trim()]);
+
+        // Ein gespeicherter X11-Befehl bleibt bei ausgeschaltetem X11 inaktiv.
+        ssh.ssh_command.clear();
+        assert_eq!(ssh_command(&ssh).get_argv().len(), 6);
+        ssh.x11_forwarding = true;
+        let command = ssh_command(&ssh);
+        assert_eq!(command.get_argv()[2], "-X");
+        assert_eq!(command.get_argv().last().unwrap(), "gedit");
+    }
+
+    #[test]
+    fn ssh_command_is_validated_and_survives_profile_roundtrip() {
+        let mut ssh = profile();
+        ssh.protocol = Protocol::Ssh;
+        ssh.ssh_command = "htop".into();
+        assert!(validate_profile(&ssh).is_ok());
+        let mut stored = serde_json::to_value(&ssh).unwrap();
+        let loaded: RemoteProfile = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(loaded.ssh_command, "htop");
+        stored.as_object_mut().unwrap().remove("sshCommand");
+        let legacy: RemoteProfile = serde_json::from_value(stored).unwrap();
+        assert!(legacy.ssh_command.is_empty());
+
+        ssh.ssh_command = "uptime\nwhoami".into();
+        assert_eq!(validate_profile(&ssh).unwrap_err(), "err.argumentLineBreak");
+        ssh.ssh_command = "x".repeat(1025);
+        assert_eq!(validate_profile(&ssh).unwrap_err(), "err.sshCommandInvalid");
     }
 
     #[test]
