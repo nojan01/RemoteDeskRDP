@@ -60,6 +60,8 @@ display. Position storage is separate from VM settings and keyed by window.
 Click **Create desktop icon** in the desklet settings to create a macOS launcher
 on the Desktop. Double-click it to open the desklet through
 `remotedesk://desklet`, starting the installed RemoteDeskRDP app if needed.
+The launcher targets the registered application by bundle ID, so it does not
+retain the path of a development build that was used to create the icon.
 Green means the VM answered an ICMP ping; red means no reply arrived within
 two seconds. Yellow indicates the initial check or a local ping error.
 An unanswered ping can also mean a firewall or network problem; it does not

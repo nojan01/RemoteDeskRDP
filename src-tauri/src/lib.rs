@@ -900,20 +900,16 @@ fn create_desklet_shortcut() -> Result<String, String> {
         .filter(|icon| icon.is_file());
     let target = write_shortcut_with_script(
         &desktop, "VM Ping Desklet", "vm-ping-desklet-launcher", icon.as_deref(),
-        &desklet_shortcut_script(bundle.as_deref()),
+        desklet_shortcut_script(),
     )?;
     Ok(target.to_string_lossy().into_owned())
 }
 
-fn desklet_shortcut_script(bundle: Option<&Path>) -> String {
-    let fallback = "exec /usr/bin/open 'remotedesk://desklet'\n";
-    match bundle {
-        Some(path) => {
-            let path = quote_posix_shell(&path.to_string_lossy());
-            format!("#!/bin/sh\nif [ -d {path} ]; then\n  exec /usr/bin/open -a {path} 'remotedesk://desklet'\nfi\n{fallback}")
-        }
-        None => format!("#!/bin/sh\n{fallback}"),
-    }
+fn desklet_shortcut_script() -> &'static str {
+    // Den registrierten Programmeintrag verwenden, keinen beim Erzeugen
+    // zufällig laufenden Build-Pfad. Sonst startet ein Icon aus einer
+    // Testfassung diese Kopie zusätzlich zur installierten App.
+    "#!/bin/sh\nexec /usr/bin/open -b 'com.nojan.remotedesk' 'remotedesk://desklet'\n"
 }
 
 fn executable_at(path: impl AsRef<Path>) -> Option<PathBuf> {
@@ -3284,11 +3280,11 @@ mod tests {
     fn desklet_shortcut_opens_the_desklet_link() {
         let dir = std::env::temp_dir().join(format!("remotedesk-desklet-shortcut-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let script = desklet_shortcut_script(None);
-        assert_eq!(script, "#!/bin/sh\nexec /usr/bin/open 'remotedesk://desklet'\n");
-        let specific = desklet_shortcut_script(Some(Path::new("/tmp/Remote Desk's.app")));
-        assert!(specific.contains(r#"/usr/bin/open -a '/tmp/Remote Desk'"'"'s.app' 'remotedesk://desklet'"#));
-        let target = write_shortcut_with_script(&dir, "VM Ping Desklet", "vm-ping-desklet-launcher", None, &script).unwrap();
+        let script = desklet_shortcut_script();
+        assert_eq!(script, "#!/bin/sh\nexec /usr/bin/open -b 'com.nojan.remotedesk' 'remotedesk://desklet'\n");
+        assert!(!script.contains("open -a"));
+        assert!(!script.contains("target/debug"));
+        let target = write_shortcut_with_script(&dir, "VM Ping Desklet", "vm-ping-desklet-launcher", None, script).unwrap();
         let executable = target.join("Contents/MacOS").join(SHORTCUT_EXECUTABLE);
         assert_eq!(std::fs::read_to_string(&executable).unwrap(), script);
         assert!(is_shortcut_for(&target, "vm-ping-desklet-launcher"));
