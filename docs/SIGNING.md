@@ -22,7 +22,7 @@ damit bereits installierte Versionen neue Updates prüfen können.
 
 1. Version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
    `src-tauri/Cargo.lock` und `src-tauri/tauri.conf.json` setzen; Changelog ergänzen.
-2. `npm ci`, `npm run build` und
+2. `npm ci`, `npm run build`, `npm test` und
    `cargo test --manifest-path src-tauri/Cargo.toml` ausführen. RDP-Tests können
    Zugriff auf den macOS-Schlüsselbund benötigen.
 3. `npm run tauri:build -- --bundles app` baut und signiert die App samt Backend.

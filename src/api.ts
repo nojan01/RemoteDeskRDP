@@ -44,9 +44,13 @@ export const activeSessionCount = () => invoke<number>("active_session_count");
 export const restartApplication = () => invoke<void>("restart_application");
 export const checkLocalNetwork = (host?: string) => invoke<boolean>("check_local_network", { host: host ?? null });
 export const openLocalNetworkSettings = () => invoke<void>("open_local_network_settings");
-export type AppSettings = { menuBar: boolean; launchAtLogin: boolean };
+export type AppSettings = { menuBar: boolean; launchAtLogin: boolean; deskletAtStartup: boolean };
 export const getAppSettings = () => invoke<AppSettings>("get_app_settings");
 export const setAppSettings = (settings: AppSettings) => invoke<AppSettings>("set_app_settings", { settings });
 export const setTrayLabels = (labels: { open: string; quit: string; empty: string }) =>
   invoke<void>("set_tray_labels", { labels });
 export const revealMainWindow = () => invoke<void>("reveal_main_window");
+export const openVmDesklet = () => invoke<void>("open_vm_desklet");
+export const pingVm = (address: string) => invoke<boolean>("ping_vm", { address });
+export const validateVmAddress = (address: string) => invoke<string>("validate_vm_address", { address });
+export const createDeskletShortcut = () => invoke<string>("create_desklet_shortcut");

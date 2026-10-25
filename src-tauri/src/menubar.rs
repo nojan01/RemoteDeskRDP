@@ -42,6 +42,7 @@ const MAX_MENU_NAME: usize = 60;
 pub(crate) struct AppSettings {
     pub menu_bar: bool,
     pub launch_at_login: bool,
+    pub desklet_at_startup: bool,
 }
 
 /// Inhalt von `settings.json`. Der Anmeldestart steht bewusst nicht darin:
@@ -52,6 +53,7 @@ pub(crate) struct AppSettings {
 #[serde(rename_all = "camelCase", default)]
 struct StoredSettings {
     menu_bar: bool,
+    desklet_at_startup: bool,
 }
 
 /// Menüleisten-Betrieb im Speicher; gelesen bei jedem Schließen des Fensters.
@@ -156,7 +158,15 @@ pub(crate) fn withheld() -> bool {
 
 #[tauri::command]
 pub(crate) fn get_app_settings(app: AppHandle) -> AppSettings {
-    AppSettings { menu_bar: menu_bar_enabled(&app), launch_at_login: login_item::enabled() }
+    AppSettings {
+        menu_bar: menu_bar_enabled(&app),
+        launch_at_login: login_item::enabled(),
+        desklet_at_startup: desklet_at_startup_enabled(),
+    }
+}
+
+pub(crate) fn desklet_at_startup_enabled() -> bool {
+    read_stored().desklet_at_startup
 }
 
 /// Übernimmt geänderte Einstellungen sofort. Der Menüleisten-Betrieb wird vor
@@ -164,8 +174,14 @@ pub(crate) fn get_app_settings(app: AppHandle) -> AppSettings {
 /// Änderung nicht mitreißt; die Oberfläche liest danach den echten Stand neu.
 #[tauri::command]
 pub(crate) fn set_app_settings(app: AppHandle, settings: AppSettings) -> Result<AppSettings, String> {
+    let stored = StoredSettings {
+        menu_bar: settings.menu_bar,
+        desklet_at_startup: settings.desklet_at_startup,
+    };
+    if stored != read_stored() {
+        write_stored(&stored)?;
+    }
     if settings.menu_bar != menu_bar_enabled(&app) {
-        write_stored(&StoredSettings { menu_bar: settings.menu_bar })?;
         app.state::<MenuBarState>().0.store(settings.menu_bar, Ordering::Relaxed);
         sync_tray(&app);
         refresh_dock(&app);
@@ -503,11 +519,24 @@ mod tests {
 
     #[test]
     fn settings_default_to_off_and_tolerate_unknown_fields() {
-        assert_eq!(StoredSettings::default(), StoredSettings { menu_bar: false });
+        assert_eq!(StoredSettings::default(), StoredSettings { menu_bar: false, desklet_at_startup: false });
         let parsed: StoredSettings = serde_json::from_str("{}").unwrap();
         assert!(!parsed.menu_bar, "fehlender Schlüssel bleibt aus");
         let parsed: StoredSettings = serde_json::from_str(r#"{"menuBar":true,"future":1}"#).unwrap();
         assert!(parsed.menu_bar);
+        assert!(!parsed.desklet_at_startup, "bestehende Einstellungen aktivieren das Desklet nicht");
+    }
+
+    #[test]
+    fn desklet_startup_option_is_preserved_with_menu_bar_settings() {
+        for menu_bar in [false, true] {
+            for desklet_at_startup in [false, true] {
+                let settings = StoredSettings { menu_bar, desklet_at_startup };
+                let json = serde_json::to_string(&settings).unwrap();
+                assert!(json.contains("deskletAtStartup"));
+                assert_eq!(serde_json::from_str::<StoredSettings>(&json).unwrap(), settings);
+            }
+        }
     }
 
     #[test]

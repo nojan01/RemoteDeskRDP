@@ -17,6 +17,7 @@ Run these checks before submitting a pull request:
 
 ```sh
 npm run build
+npm test
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 

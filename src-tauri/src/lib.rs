@@ -13,6 +13,7 @@ use std::time::Duration;
 use tauri::{Emitter, Manager};
 
 mod menubar;
+mod desklet;
 
 // Die App heisst seit der Umbenennung RemoteDeskRDP. Die folgenden drei
 // Bezeichner behalten trotzdem den alten Namen: An ihnen haengen der
@@ -821,6 +822,10 @@ fn is_shortcut_for(path: &Path, profile_id: &str) -> bool {
 /// Verbindung startet. Eine ältere Verknüpfung zum selben Profil wird
 /// ersetzt, fremde Dateien gleichen Namens bleiben unangetastet.
 fn write_shortcut(dir: &Path, name: &str, profile_id: &str, icon: Option<&Path>) -> Result<PathBuf, String> {
+    write_shortcut_with_script(dir, name, profile_id, icon, &shortcut_script(profile_id))
+}
+
+fn write_shortcut_with_script(dir: &Path, name: &str, profile_id: &str, icon: Option<&Path>, script: &str) -> Result<PathBuf, String> {
     let base = shortcut_file_name(name);
     let target = (1..=99)
         .map(|n| dir.join(if n == 1 { format!("{base}.app") } else { format!("{base} {n}.app") }))
@@ -836,7 +841,7 @@ fn write_shortcut(dir: &Path, name: &str, profile_id: &str, icon: Option<&Path>)
         std::fs::create_dir_all(&macos)?;
         std::fs::write(contents.join("Info.plist"), shortcut_info_plist(name, profile_id, icon.is_some()))?;
         let executable = macos.join(SHORTCUT_EXECUTABLE);
-        std::fs::write(&executable, shortcut_script(profile_id))?;
+        std::fs::write(&executable, script)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -883,6 +888,31 @@ fn create_desktop_shortcut(id: String, store: tauri::State<'_, ProfileStore>) ->
     {
         let _ = store;
         Err("err.shortcutUnsupported".into())
+    }
+}
+
+#[tauri::command(async)]
+fn create_desklet_shortcut() -> Result<String, String> {
+    let desktop = dirs::desktop_dir().ok_or_else(|| "err.desktopMissing".to_string())?;
+    let bundle = std::env::current_exe().ok().and_then(|exe| bundle_path(&exe));
+    let icon = bundle.as_ref()
+        .map(|bundle| bundle.join("Contents/Resources/icon.icns"))
+        .filter(|icon| icon.is_file());
+    let target = write_shortcut_with_script(
+        &desktop, "VM Ping Desklet", "vm-ping-desklet-launcher", icon.as_deref(),
+        &desklet_shortcut_script(bundle.as_deref()),
+    )?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+fn desklet_shortcut_script(bundle: Option<&Path>) -> String {
+    let fallback = "exec /usr/bin/open 'remotedesk://desklet'\n";
+    match bundle {
+        Some(path) => {
+            let path = quote_posix_shell(&path.to_string_lossy());
+            format!("#!/bin/sh\nif [ -d {path} ]; then\n  exec /usr/bin/open -a {path} 'remotedesk://desklet'\nfi\n{fallback}")
+        }
+        None => format!("#!/bin/sh\n{fallback}"),
     }
 }
 
@@ -2733,6 +2763,11 @@ fn restore_main_window(app: &tauri::AppHandle) {
 /// atomar leert.
 fn remember_link(handle: &tauri::AppHandle, url: &tauri::Url) {
     use tauri::{Emitter, Manager};
+    if desklet::is_desklet_url(url) {
+        menubar::withhold_for_link(handle);
+        desklet::request_open(handle.clone());
+        return;
+    }
     let Some(id) = profile_id_from_url(url) else { return };
     menubar::withhold_for_link(handle);
     // LaunchServices hat die Menüleisten-App für den Link eben zur Dock-App
@@ -3099,6 +3134,9 @@ pub fn run() {
                 menubar::show_at_launch(app.handle());
             }
             menubar::sync_tray(app.handle());
+            if menubar::desklet_at_startup_enabled() {
+                desklet::request_open(app.handle().clone());
+            }
             app.on_menu_event(|app, event| menubar::on_menu_event(app, event.id().as_ref()));
             #[cfg(target_os = "macos")]
             {
@@ -3133,7 +3171,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_profiles, save_profile, delete_profile, create_desktop_shortcut, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, menubar::get_app_settings, menubar::set_app_settings, menubar::set_tray_labels, menubar::reveal_main_window, active_session_count, restart_application, list_monitors, check_local_network, open_local_network_settings])
+        .invoke_handler(tauri::generate_handler![create_desklet_shortcut, desklet::validate_vm_address, desklet::ping_vm, desklet::open_vm_desklet, list_profiles, save_profile, delete_profile, create_desktop_shortcut, save_password, load_password, forget_password, save_gateway_password, load_gateway_password, forget_gateway_password, connect_profile, start_vnc_session, start_ssh_session, write_ssh_session, resize_ssh_session, stop_ssh_session, close_terminal_session, minimize_terminal_window, take_pending_link, minimize_window, app_version, set_update_menu_label, menubar::get_app_settings, menubar::set_app_settings, menubar::set_tray_labels, menubar::reveal_main_window, active_session_count, restart_application, list_monitors, check_local_network, open_local_network_settings])
         .build(tauri::generate_context!())
         .expect("Fehler beim Start von RemoteDeskRDP");
     app.run(|app, event| {
@@ -3240,6 +3278,27 @@ mod tests {
         assert_eq!(shortcut_file_name("   "), "RemoteDesk");
         assert_eq!(shortcut_file_name("a\nb"), "a-b");
         assert_eq!(shortcut_file_name(&"x".repeat(200)).chars().count(), SHORTCUT_NAME_LIMIT);
+    }
+
+    #[test]
+    fn desklet_shortcut_opens_the_desklet_link() {
+        let dir = std::env::temp_dir().join(format!("remotedesk-desklet-shortcut-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = desklet_shortcut_script(None);
+        assert_eq!(script, "#!/bin/sh\nexec /usr/bin/open 'remotedesk://desklet'\n");
+        let specific = desklet_shortcut_script(Some(Path::new("/tmp/Remote Desk's.app")));
+        assert!(specific.contains(r#"/usr/bin/open -a '/tmp/Remote Desk'"'"'s.app' 'remotedesk://desklet'"#));
+        let target = write_shortcut_with_script(&dir, "VM Ping Desklet", "vm-ping-desklet-launcher", None, &script).unwrap();
+        let executable = target.join("Contents/MacOS").join(SHORTCUT_EXECUTABLE);
+        assert_eq!(std::fs::read_to_string(&executable).unwrap(), script);
+        assert!(is_shortcut_for(&target, "vm-ping-desklet-launcher"));
+        assert!(!is_shortcut_for(&target, "some-profile"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(std::fs::metadata(executable).unwrap().permissions().mode() & 0o111, 0);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
