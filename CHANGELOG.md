@@ -2,6 +2,12 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- Desklet-Verknüpfungen öffnen die registrierte App über ihre Bundle-ID statt
+  einen beim Erstellen gespeicherten Build-Pfad. Eine frühere Testfassung wird
+  dadurch nicht zusätzlich zur installierten App gestartet.
+
 ## 0.7.19 – 2026-10-25
 
 - Neu: VM-Ping-Desklet zur gleichzeitigen Überwachung mehrerer IPv4-/IPv6-Ziele
