@@ -2,7 +2,7 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
-## Unreleased
+## 0.7.20 – 2026-10-25
 
 - Desklet-Verknüpfungen öffnen die registrierte App über ihre Bundle-ID statt
   einen beim Erstellen gespeicherten Build-Pfad. Eine frühere Testfassung wird
