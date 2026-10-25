@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import RFB from "@novnc/novnc";
-import { checkLocalNetwork, closeTerminalSession, connectProfile, createDesktopShortcut, deleteProfile, forgetGatewayPassword, forgetPassword, listMonitors, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, openLocalNetworkSettings, revealMainWindow, saveGatewayPassword, savePassword, saveProfile, setTrayLabels, setUpdateMenuLabel, startVncSession, takePendingLink, getAppSettings, setAppSettings, type AppSettings } from "./api";
+import { openVmDesklet, checkLocalNetwork, closeTerminalSession, connectProfile, createDesktopShortcut, deleteProfile, forgetGatewayPassword, forgetPassword, listMonitors, listProfiles, loadGatewayPassword, loadPassword, minimizeWindow, openLocalNetworkSettings, revealMainWindow, saveGatewayPassword, savePassword, saveProfile, setTrayLabels, setUpdateMenuLabel, startVncSession, takePendingLink, getAppSettings, setAppSettings, type AppSettings } from "./api";
 import { checkForUpdates, type UpdateReporter } from "./updater";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -135,7 +135,7 @@ export function App() {
   };
   const [licenseOpen, setLicenseOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
-  const [appSettings, setAppSettingsState] = createSignal<AppSettings>({ menuBar: false, launchAtLogin: false });
+  const [appSettings, setAppSettingsState] = createSignal<AppSettings>({ menuBar: false, launchAtLogin: false, deskletAtStartup: false });
   const [dirty, setDirty] = createSignal(false);
   const [password, setPassword] = createSignal("");
   const [revealPassword, setRevealPassword] = createSignal(false);
@@ -517,6 +517,7 @@ export function App() {
       </div>
       <div class="side-footer">
         <button onClick={newProfile}>{t("side.newProfile")}</button>
+        <button class="quiet" onClick={() => void openVmDesklet().catch(error => infoDialog(String(error)))}>{t("desklet.open")}</button>
         <button class="quiet" onClick={() => setHelpOpen(true)}>{t("side.help")}</button>
         <button class="quiet" onClick={() => setLicenseOpen(true)}>{t("side.license")}</button>
         <button class="quiet" onClick={() => setSettingsOpen(true)}>{t("side.settings")}</button>
@@ -702,6 +703,8 @@ export function App() {
             <p>{t("settings.menuBarHint")}</p>
             <Toggle label={t("settings.launchAtLogin")} checked={appSettings().launchAtLogin} onChange={(value) => void changeSettings({ launchAtLogin: value })} />
             <p>{t("settings.launchAtLoginHint")}</p>
+            <Toggle label={t("settings.deskletAtStartup")} checked={appSettings().deskletAtStartup} onChange={(value) => void changeSettings({ deskletAtStartup: value })} />
+            <p>{t("settings.deskletAtStartupHint")}</p>
           </div>
         </div>
       </div>

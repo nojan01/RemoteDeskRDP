@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desklet",
+  "description": "VM-Ping-Desklet: Zugriff auf das eigene Fenster.",
+  "windows": ["vm-desklet"],
+  "permissions": ["core:default", "core:window:allow-close", "core:window:allow-set-size", "core:window:allow-set-position", "core:window:allow-show", "core:window:allow-start-dragging"]
+}

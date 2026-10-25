@@ -2,6 +2,22 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## 0.7.19 – 2026-10-25
+
+- Neu: VM-Ping-Desklet zur gleichzeitigen Überwachung mehrerer IPv4-/IPv6-Ziele
+  mit eigenem Namen, Prüfintervall, Status und Zeitstempel je VM.
+- Kompakte, rahmenlose Desktop-Anzeige mit einstellbarem Hintergrund bis hin
+  zu vollständiger Transparenz. Schrift, Status und Bedienelemente bleiben klar.
+  Die Kopfzeile dient zum Verschieben; ein Ausschaltknopf beendet die Überwachung.
+- Das Desklet merkt sich seine Position und kehrt beim nächsten Öffnen dorthin
+  zurück. Bei geänderter Bildschirmanordnung bleibt das Fenster erreichbar.
+- Optionaler Start des Desklets beim Programmstart, auch nach der macOS-Anmeldung,
+  sowie eine Schreibtisch-Verknüpfung zum direkten Öffnen.
+- Einstellungen bleiben beim Wechsel von einer einzelnen VM zu mehreren Zielen
+  erhalten. Ausbleibende Antworten und lokale Ping-Fehler werden unterschieden.
+- Der Start über die Schreibtisch-Verknüpfung öffnet das Fenster außerhalb des
+  Deep-Link-Ereignisses und vermeidet dadurch eine interne Sperre.
+
 ## 0.7.18 – 2026-10-24
 
 - SSH-Befehle optional im Hintergrund starten und die SSH-Verbindung nach der

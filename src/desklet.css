@@ -1,0 +1,49 @@
+html.vm-desklet-page, html.vm-desklet-page body, html.vm-desklet-page #root { background: transparent; }
+.vm-desklet { width: 100%; height: 100vh; overflow: auto; padding: 20px; border-radius: 12px; color: var(--text); font-size: 13px; }
+.vm-desklet header { display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: move; user-select: none; }
+.vm-desklet header span, .vm-last-check, .vm-note { color: var(--text-muted); font-size: 11px; }
+.vm-status { display: grid; justify-items: center; gap: 9px; margin-top: 20px; --vm-color: #eab64c; }
+.vm-status-dot { width: 42px; height: 42px; border-radius: 50%; background: var(--vm-color); box-shadow: 0 0 0 7px color-mix(in srgb, var(--vm-color) 13%, transparent); margin: 7px; }
+.vm-online { --vm-color: #39c985; }
+.vm-offline { --vm-color: #ef6666; }
+.vm-idle { --vm-color: #8591a5; }
+.vm-status strong { color: var(--vm-color); font-size: 19px; }
+.vm-address { max-width: 100%; overflow-wrap: anywhere; font-family: monospace; }
+.vm-last-check { margin: 10px 0 18px; text-align: center; }
+.vm-desklet form { display: grid; gap: 12px; }
+.vm-desklet label { display: grid; gap: 5px; color: var(--text-label); }
+.vm-desklet input { width: 100%; min-width: 0; height: 34px; padding: 0 9px; border: 1px solid var(--border-input); border-radius: 7px; background: var(--surface-input); color: var(--text); }
+.vm-desklet input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.vm-desklet button { padding: 9px; border-radius: 7px; background: var(--accent); color: white; cursor: pointer; }
+.vm-error { margin: 8px 0; color: var(--text); font-size: 11px; line-height: 1.45; }
+.vm-note { line-height: 1.5; margin: 14px 0 0; }
+.vm-header-actions { display: flex; align-items: center; gap: 7px; }
+.vm-desklet .vm-settings-button { display: grid; place-items: center; width: 23px; height: 23px; padding: 0; border: 0; background: transparent; color: var(--text-muted); font-size: 16px; }
+.vm-desklet .vm-settings-button:hover { color: var(--text); background: var(--surface-hover); }
+.vm-desklet .vm-power-button:hover { color: #ef6666; }
+.vm-desklet .vm-settings-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.vm-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.vm-compact { padding: 9px 12px; text-shadow: 0 1px 2px rgba(0, 0, 0, .85); }
+html[data-theme="light"] .vm-compact { text-shadow: 0 1px 2px rgba(255, 255, 255, .85); }
+.vm-compact header span, .vm-compact .vm-last-check, .vm-compact .vm-settings-button { color: var(--text-strong); }
+.vm-compact .vm-settings-button { background: var(--surface-btn); }
+.vm-compact .vm-status { margin-top: 12px; gap: 7px; }
+.vm-compact .vm-last-check { margin: 8px 0 0; }
+.vm-compact .vm-address { font-weight: 600; }
+.vm-desklet .vm-opacity-slider { padding: 0; height: 24px; accent-color: var(--accent); }
+.vm-desklet .vm-opacity-note { margin: -8px 0 0; }
+.vm-desklet .vm-shortcut-button { width: 100%; margin-top: 12px; background: var(--surface-btn); color: var(--text); border: 1px solid var(--border-btn); }
+.vm-desklet button:disabled { opacity: .5; cursor: wait; }
+.vm-status-copy { display: contents; }
+.vm-multiple .vm-monitor { padding-top: 13px; }
+.vm-multiple .vm-status { display: flex; align-items: center; gap: 14px; margin-top: 0; }
+.vm-multiple .vm-status-dot { width: 28px; height: 28px; flex: 0 0 28px; }
+.vm-multiple .vm-status-copy { display: grid; gap: 5px; min-width: 0; }
+.vm-multiple .vm-status strong { font-size: 15px; }
+.vm-multiple .vm-last-check { text-align: left; margin: 7px 0 12px 56px; line-height: 1.5; }
+.vm-target-interval { white-space: nowrap; }
+.vm-setup-form { margin-top: 18px; }
+.vm-target-fields { display: grid; gap: 10px; margin: 0; padding: 12px; min-width: 0; border: 1px solid var(--border-input); border-radius: 8px; }
+.vm-target-fields legend { padding: 0 6px; color: var(--text-strong); font-weight: 650; }
+.vm-desklet .vm-remove-button, .vm-desklet .vm-add-button { background: var(--surface-btn); color: var(--text); border: 1px solid var(--border-btn); }
+.vm-desklet .vm-remove-button { justify-self: end; font-size: 11px; padding: 6px 9px; }

@@ -31,6 +31,45 @@ macOS Keychain; profile files never contain passwords.
 - Profile-based connections with certificate-change warnings and automatic
   reconnect support.
 - Native light/dark appearance and German/English localization.
+- Always-on-top VM ping desklet with a saved IP address and polling interval.
+
+## VM ping desklet
+
+Click **VM ping desklet** in the sidebar to open the compact status window.
+Enter an IPv4 or IPv6 address, choose an interval from 3 to 3600 seconds, and
+click **Save & check**. The settings are remembered when you reopen the desklet.
+Use **Add another VM** in settings to monitor multiple VMs together. Each VM
+has its own name, IP address, polling interval, status and last-check time.
+Checks run independently, so an unreachable VM does not delay the others.
+Remove entries with **Remove VM** and apply the changes with **Save & check**.
+Existing single-VM settings are retained automatically. The compact view
+adapts its height to the list and scrolls when it would exceed the screen.
+You can also set a VM name, displayed above the IP address. Saving switches to
+a compact status view. Use the gear button to reopen settings; configured
+desklets also open in compact view on subsequent starts.
+Set **Transparency** from 0% to 100% to make only the compact view's background
+translucent or remove it entirely; text, status indicator and controls stay opaque. The setup view
+stays opaque. The chosen transparency is saved with the IP. The desklet has
+no native title bar: drag its header to move it, use the gear to configure it,
+and use the power button to close it and stop monitoring. The desktop icon
+opens it again with the saved settings.
+The desklet remembers its last position when moved and restores it before
+appearing, including after an app restart. If a display was disconnected or
+its work area changed, the window is moved back onto the nearest available
+display. Position storage is separate from VM settings and keyed by window.
+Click **Create desktop icon** in the desklet settings to create a macOS launcher
+on the Desktop. Double-click it to open the desklet through
+`remotedesk://desklet`, starting the installed RemoteDeskRDP app if needed.
+Green means the VM answered an ICMP ping; red means no reply arrived within
+two seconds. Yellow indicates the initial check or a local ping error.
+An unanswered ping can also mean a firewall or network problem; it does not
+prove that the VM is powered off. Monitoring runs while the desklet is open
+and the Mac is awake. Closing the desklet stops monitoring.
+
+Enable **Open VM ping desklet at startup** in Settings to open it automatically
+whenever RemoteDeskRDP starts, including launch at login. This option is off by
+default. With a saved IP address, monitoring starts immediately. Enable
+**Open at login** as well to start the app and desklet when you log in to macOS.
 
 ## Download
 
