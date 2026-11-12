@@ -1181,6 +1181,12 @@ fn rdp_arguments(profile: &RemoteProfile, backend: Backend) -> Result<Vec<String
     // erkennbar, ob überhaupt wiederverbunden wurde.
     arguments.push("/log-level:INFO".into());
     arguments.push(format!("/t:{}", window_title(profile)));
+    // Seit FreeRDP 3.33 öffnet der SDL-Client während des Verbindungsaufbaus
+    // ein eigenes Dialogfenster. RemoteDesk zeigt den Fortschritt selbst an;
+    // ein zweites Fenster würde nur kurz aufblitzen und den Fokus stehlen.
+    if backend == Backend::Sdl {
+        arguments.push("-sdl-connection-dialog".into());
+    }
     if !profile.username.trim().is_empty() {
         arguments.push(format!("/u:{}", profile.username.trim()));
     }
@@ -3510,6 +3516,14 @@ mod tests {
         // Das Kennwort kommt vom Browser-Login; `/d:` würde den UPN verfälschen.
         assert!(!arguments.iter().any(|a| a.starts_with("/p:") || a.starts_with("/d:")));
         assert_eq!(rdp_arguments(&profile, Backend::Cocoa).unwrap_err(), "err.entraIdBackend");
+    }
+
+    #[test]
+    fn only_the_sdl_client_gets_its_connection_dialog_disabled() {
+        let flag = "-sdl-connection-dialog".to_string();
+        assert!(rdp_arguments(&profile(), Backend::Sdl).expect("Argumente").contains(&flag));
+        // MacFreeRDP kennt den Schalter nicht und bräche mit einem Parserfehler ab.
+        assert!(!rdp_arguments(&profile(), Backend::Cocoa).expect("Argumente").contains(&flag));
     }
 
     #[test]

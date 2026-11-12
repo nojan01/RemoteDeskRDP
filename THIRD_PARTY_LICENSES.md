@@ -12,7 +12,7 @@ unter `resources/licenses/`.
 
 | Komponente | Version | Lizenz | Zweck |
 |---|---|---|---|
-| FreeRDP | 3.26.0 | Apache-2.0 | RDP-Protokoll |
+| FreeRDP | 3.33.1 | Apache-2.0 | RDP-Protokoll |
 | OpenSSL | 3 | Apache-2.0 | Verschlüsselung |
 | FFmpeg | 8.0.1 | **LGPL-2.1-or-later** | Bildskalierung |
 | libusb | 1.0.29 | **LGPL-2.1-or-later** | USB-Weiterleitung |

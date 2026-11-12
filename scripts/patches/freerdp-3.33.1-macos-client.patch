@@ -1,0 +1,1078 @@
+Anpassungen an FreeRDP 3.33.1 für RemoteDesk
+============================================
+
+Erzeugt gegen den unveränderten Stand des Tags 3.33.1. Wird von
+scripts/build-freerdp-backend.sh angewendet, nachdem die betroffenen Dateien
+per `git checkout --` zurückgesetzt wurden.
+
+1. scripts/bundle-mac-os.sh
+   Das Bundling-Skript baut den nativen Cocoa-Client nicht mit. Ergänzt
+   -DWITH_CLIENT_MAC=ON, damit MacFreeRDP als Rückfall zur Verfügung steht.
+   Ausserdem wendet es nach dem Klonen der Abhängigkeiten den SDL-Patch aus
+   REMOTEDESK_SDL_PATCH an (siehe sdl-3.2.28-clipboard-poll.patch).
+
+2. client/Mac/cli/MainMenu.xib, client/Mac/cli/AppDelegate.{h,m}
+   Das Fenster des Cocoa-Clients war auf 1024x768 festgenagelt (minSize gleich
+   maxSize), und die Sitzungsansicht wurde ohne Autoresizing-Maske eingehängt,
+   wuchs also nie mit. Die Obergrenze entfällt, die Untergrenze sinkt auf
+   640x480, und die Ansicht folgt dem Fenster. Zusätzlich hält
+   sessionViewDidResize: client_width/height nach, weil der Kommandozeilen-
+   Client setScrollOffset:y:w:h: nie aufruft und Skalierung samt
+   Mauskoordinaten sonst toter Code bleiben.
+
+3. client/SDL/SDL3/sdl_{context,freerdp}.{cpp,hpp}
+   Der SDL-Client stellt je eingegangenem Aktualisierungspaket ein Bild dar.
+   Jedes SDL_RenderPresent wartet auf den Bildwechsel des Monitors, ein
+   Bildaufbau aus zwanzig Paketen kostet somit zwanzig Wartezyklen. Nun
+   zeichnet drawToWindows(rects, false) nur in die Fenster, und erst nach dem
+   Leeren der Warteschlange stellt presentWindows() einmal dar. Gemessen (mit
+   3.26.0) sank die Renderlast im Hauptthread von 47 auf 1 Prozent.
+
+4. client/SDL/SDL3/sdl_clip.{cpp,hpp}, sdl_context.{cpp,hpp}
+   (Ziehen und Fallenlassen: Mac -> Sitzung)
+   RDP hat keinen Kanal für Ziehen und Fallenlassen; die Kanalliste unter
+   channels/ kennt nur cliprdr und rdpdr. Der einzige Weg, abgelegte Dateien
+   in den Gast zu bringen, führt daher über die Zwischenablage.
+
+   SDL meldet abgelegte Dateien als SDL_EVENT_DROP_*, der Client wirft sie
+   weg. Nun sammelt SdlContext::handleEvent(SDL_DropEvent) die Pfade und
+   übergibt sie beim Loslassen an sdlClip::offerDroppedFiles(). Das kündigt
+   dem Gast FileGroupDescriptorW an, ohne die Mac-Zwischenablage anzutasten:
+   Die Pfade liegen prozentkodiert in _drop_uri_list und werden in
+   ReceiveFormatDataRequestHandle vor der Zwischenablage des Macs bedient.
+
+   Die Reihenfolge ist entscheidend. Erst wenn der Gast die Formatliste
+   bestätigt hat, liegen die Dateien in seiner Zwischenablage; ein sofortiges
+   Strg+V ginge ins Leere. waitForDropAck() wartet deshalb auf das Ereignis,
+   das ReceiveFormatListResponse setzt. Danach folgen Zeigerbewegung,
+   Fokusklick und Strg+V an der Stelle des Loslassens - umgerechnet über
+   dieselbe Kette wie echte Mausereignisse (eventToPixelCoordinates,
+   removeLocalScaling, applyMonitorOffset), sonst zeigt der Gastzeiger bei
+   skalierten Fenstern woandershin.
+
+5. client/SDL/SDL3/sdl_clip.{cpp,hpp}, sdl_context.{cpp,hpp},
+   client/common/client_cliprdr_file.c, include/freerdp/client/client_cliprdr_file.h
+   (Ziehen aus der Sitzung auf den Mac)
+   RDP meldet dem Client nicht, dass im Gast gezogen wird - der Server sendet
+   dazu nichts. Der Client muss die Absicht deshalb aus dem erschliessen, was
+   er selbst sieht: gedrückte linke Maustaste, gedrückte Wahltaste und ein
+   Zeiger, der das Fenster verlässt. Die Wahltaste ist bewusst verlangt, sonst
+   löste jedes Herausfahren mit gedrückter Taste - etwa beim Markieren von
+   Text - den Vorgang aus.
+
+   startDragOut() bricht dann im Gast das Ziehen mit Esc ab (erst danach die
+   Maustaste loslassen, umgekehrt legte der Gast die Datei am Fensterrand ab),
+   kopiert mit Strg+C und wartet in sdlClip::fetchServerFiles() auf die
+   Formatliste des Servers. Die Wahltaste wird im Gast vorher losgelassen,
+   sonst entstünde Alt+Esc beziehungsweise Alt+C.
+
+   macOS braucht beim Beginn des Ziehens fertige Dateien. FreeRDP holt
+   Serverdateien seit 3.33 erst beim Einfügen ab (client_cliprdr_file_apple.m).
+   Die neue Funktion cliprdr_file_context_download_server_files() nutzt
+   dieselben Bausteine (apple_set_server_files, apple_provide_file), lädt aber
+   sofort alles herunter und liefert die Pfade. Die gehen an
+   RemoteDesk_StartFileDrag() im SDL-Patch, ab dort führt macOS den Vorgang.
+
+6. client/SDL/SDL3/sdl_window.cpp (schwarzer Bildschirm beim Start)
+   Zum Vermessen der Monitore öffnet der SDL-Client je Display ein kleines
+   Fenster, schaltet es in den Vollbildmodus und liest Lage, Pixelgrösse und
+   Skalierung ab. Unter macOS zieht dieses Fenster in einen eigenen
+   Vollbild-Space: Der ganze Bildschirm wird bei jedem Sitzungsstart kurz
+   schwarz. FreeRDP fragt unter Wayland und X11 bereits ohne Fenster ab
+   (queryDisplay); unter macOS geschieht das nun ebenso.
+
+7. client/Mac/CMakeLists.txt (Fehler von FreeRDP, auch in master)
+   Die Cocoa-Bibliothek übersetzt ../common/client.c ein zweites Mal. Seit
+   3.32 ruft client.c die OAuth2-Hilfen aus oauth2.c, die libfreerdp-client
+   nicht exportiert - das Linken von libMacFreeRDP-library scheitert mit
+   "Undefined symbols _freerdp_oauth2_*". oauth2.c wird nun mit übersetzt.
+
+Entfallen gegenüber dem Patch für 3.26.0, weil FreeRDP es inzwischen selbst
+löst: die Baufehler in client/Mac/Keyboard.m, die leere Formatliste beim
+Aushandeln der Zwischenablage, das Kopieren von Dateien in beide Richtungen
+samt Prozentkodierung (WITH_CLIPRDR_FILE_APPLE), das Alpha-Blenden der
+Texturen und der RAIL-Handshake (eigene RemoteApp-Unterstützung in
+sdl_rail.cpp).
+
+diff --git a/client/Mac/CMakeLists.txt b/client/Mac/CMakeLists.txt
+index d690a72..8f19f46 100644
+--- a/client/Mac/CMakeLists.txt
++++ b/client/Mac/CMakeLists.txt
+@@ -56,7 +56,7 @@ if("${CMAKE_GENERATOR}" MATCHES "Xcode")
+   set(IS_XCODE ON)
+ endif()
+ 
+-add_library(${PROJECT_NAME} ../common/client.c ${SOURCES} ${HEADERS} ${RESOURCES})
++add_library(${PROJECT_NAME} ../common/client.c ../common/oauth2.c ${SOURCES} ${HEADERS} ${RESOURCES})
+ 
+ set(LIBS ${EXTRA_LIBS} freerdp-client)
+ 
+diff --git a/client/Mac/cli/AppDelegate.h b/client/Mac/cli/AppDelegate.h
+index e860039..de7a6e1 100644
+--- a/client/Mac/cli/AppDelegate.h
++++ b/client/Mac/cli/AppDelegate.h
+@@ -19,6 +19,7 @@
+ }
+ 
+ - (void)rdpConnectError:(NSString *)customMessage;
++- (void)sessionViewDidResize:(NSNotification *)notification;
+ 
+ @property(assign) IBOutlet NSWindow *window;
+ @property(assign) rdpContext *context;
+diff --git a/client/Mac/cli/AppDelegate.m b/client/Mac/cli/AppDelegate.m
+index 29fd2fe..80fc454 100644
+--- a/client/Mac/cli/AppDelegate.m
++++ b/client/Mac/cli/AppDelegate.m
+@@ -25,6 +25,7 @@ void mac_set_view_size(rdpContext *context, MRDPView *view);
+ 
+ - (void)dealloc
+ {
++	[[NSNotificationCenter defaultCenter] removeObserver:self];
+ 	[super dealloc];
+ }
+ 
+@@ -97,6 +98,24 @@ void mac_set_view_size(rdpContext *context, MRDPView *view);
+ 	[mrdpView resume];
+ }
+ 
++/* Keeps the smart sizing scale factors in sync with the window.  mac_end_paint()
++ * and mf_scale_mouse_coordinates() derive both the repaint rectangles and the
++ * pointer position from client_width/client_height, which nothing else in the
++ * standalone client ever updates. */
++- (void)sessionViewDidResize:(NSNotification *)notification
++{
++	if (!context || !mrdpView)
++		return;
++
++	const NSSize size = [mrdpView frame].size;
++
++	if ((size.width < 1) || (size.height < 1))
++		return;
++
++	[mrdpView setScrollOffset:0 y:0 w:(int)size.width h:(int)size.height];
++	[mrdpView setNeedsDisplay:YES];
++}
++
+ - (void)applicationWillResignActive:(NSNotification *)notification
+ {
+ 	[mrdpView pause];
+@@ -281,6 +300,23 @@ void AppDelegate_EmbedWindowEventHandler(void *ctx, const EmbedWindowEventArgs *
+ 		if (_singleDelegate->window)
+ 		{
+ 			[[_singleDelegate->window contentView] addSubview:mfc->view];
++
++			/* Without an autoresizing mask the session view keeps its initial
++			 * frame, so enlarging the window only adds empty space around a
++			 * fixed image.  Smart sizing is supposed to scale the session, and
++			 * -drawRect: already stretches the bitmap over the whole view, so
++			 * letting the view follow the window is all that is missing. */
++			if (freerdp_settings_get_bool(context->settings, FreeRDP_SmartSizing))
++			{
++				[[_singleDelegate->window contentView] setAutoresizesSubviews:YES];
++				[mfc->view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
++				[mfc->view setPostsFrameChangedNotifications:YES];
++				[[NSNotificationCenter defaultCenter]
++				    addObserver:_singleDelegate
++				       selector:@selector(sessionViewDidResize:)
++				           name:NSViewFrameDidChangeNotification
++				         object:mfc->view];
++			}
+ 		}
+ 
+ 		dispatch_async(dispatch_get_main_queue(), ^{
+@@ -315,8 +351,8 @@ void mac_set_view_size(rdpContext *context, MRDPView *view)
+ 	// calculate window of same size, but keep position
+ 	NSRect outerRect = [[view window] frame];
+ 	outerRect.size = [[view window] frameRectForContentRect:innerRect].size;
+-	// we are not in RemoteApp mode, disable larger than resolution
+-	[[view window] setContentMaxSize:innerRect.size];
++	[[view window] setMaxSize:NSMakeSize(10000, 10000)];
++	[[view window] setContentMaxSize:NSMakeSize(10000, 10000)];
+ 	// set window to given area
+ 	[[view window] setFrame:outerRect display:YES];
+ 	// set window to front
+diff --git a/client/Mac/cli/MainMenu.xib b/client/Mac/cli/MainMenu.xib
+index f647699..a461dee 100644
+--- a/client/Mac/cli/MainMenu.xib
++++ b/client/Mac/cli/MainMenu.xib
+@@ -103,8 +103,7 @@
+             <windowCollectionBehavior key="collectionBehavior" fullScreenPrimary="YES"/>
+             <rect key="contentRect" x="163" y="10" width="1024" height="768"/>
+             <rect key="screenRect" x="0.0" y="0.0" width="2560" height="1417"/>
+-            <value key="minSize" type="size" width="1024" height="768"/>
+-            <value key="maxSize" type="size" width="1024" height="768"/>
++            <value key="minSize" type="size" width="640" height="480"/>
+             <view key="contentView" id="372">
+                 <rect key="frame" x="0.0" y="0.0" width="1024" height="768"/>
+                 <autoresizingMask key="autoresizingMask"/>
+diff --git a/client/SDL/SDL3/sdl_clip.cpp b/client/SDL/SDL3/sdl_clip.cpp
+index 379d885..6c9b7b7 100644
+--- a/client/SDL/SDL3/sdl_clip.cpp
++++ b/client/SDL/SDL3/sdl_clip.cpp
+@@ -28,6 +28,7 @@
+ #include <cstring>
+ 
+ #include <winpr/wlog.h>
++#include <winpr/string.h>
+ #include <winpr/image.h>
+ 
+ #include <string_view>
+@@ -230,6 +231,9 @@ sdlClip::sdlClip(SdlContext* sdl)
+ {
+ 	WINPR_ASSERT(sdl);
+ 
++	_drop_ack = CreateEventA(nullptr, TRUE, FALSE, nullptr);
++	_server_files = CreateEventA(nullptr, TRUE, FALSE, nullptr);
++
+ 	std::stringstream ss;
+ 	ss << s_mime_freerdp_update << "-" << _uuid;
+ 	_mime_uuid = ss.str();
+@@ -249,6 +253,8 @@ sdlClip::~sdlClip()
+ 	cliprdr_file_context_free(_file);
+ 	ClipboardDestroy(_system);
+ 	std::ignore = CloseHandle(_event);
++	std::ignore = CloseHandle(_drop_ack);
++	std::ignore = CloseHandle(_server_files);
+ }
+ 
+ bool sdlClip::init(CliprdrClientContext* clip)
+@@ -294,6 +300,157 @@ bool sdlClip::uninit(CliprdrClientContext* clip)
+ 	return true;
+ }
+ 
++/* RemoteDesk: baut aus lokalen Pfaden eine "text/uri-list", wie sie
++ * freedesktop-Programme liefern. winpr entschluesselt die Prozentkodierung
++ * beim Zerlegen wieder (parse_uri_to_local_file), Leerzeichen und Umlaute
++ * muessen also kodiert werden.
++ */
++static std::string paths_to_uri_list(const std::vector<std::string>& paths)
++{
++	std::string list;
++	for (const auto& path : paths)
++	{
++		if (path.empty() || path.front() != '/')
++			continue;
++
++		/* Der Schraegstrich trennt die Bestandteile und darf nicht kodiert
++		 * werden, alles andere schon. Deshalb Abschnitt fuer Abschnitt. */
++		std::string encoded;
++		size_t pos = 0;
++		while (pos < path.size())
++		{
++			auto next = path.find('/', pos);
++			if (next == std::string::npos)
++				next = path.size();
++
++			if (next > pos)
++			{
++				auto part = path.substr(pos, next - pos);
++				auto enc = std::shared_ptr<char>(winpr_str_url_encode(part.c_str(), part.size()),
++				                                 free);
++				if (!enc)
++					return {};
++				encoded += enc.get();
++			}
++			if (next < path.size())
++				encoded += '/';
++			pos = next + 1;
++		}
++
++		list += "file://";
++		list += encoded;
++		list += "\r\n";
++	}
++	return list;
++}
++
++bool sdlClip::offerDroppedFiles(const std::vector<std::string>& paths)
++{
++	if (!_ctx || !_sync || paths.empty())
++	{
++		WLog_Print(_log, WLOG_WARN, "Ablegen ignoriert: Kanal noch nicht bereit");
++		return false;
++	}
++
++	auto list = paths_to_uri_list(paths);
++	if (list.empty())
++		return false;
++
++	std::ignore = ResetEvent(_drop_ack);
++
++	CLIPRDR_FORMAT format = {};
++	std::string name = s_type_FileGroupDescriptorW;
++	{
++		ClipboardLockGuard systemlock(_system);
++		std::scoped_lock lock(_lock);
++		clearServerFormats();
++		_drop_uri_list = list;
++		format.formatId = ClipboardRegisterFormat(_system, name.c_str());
++		format.formatName = name.data();
++	}
++
++	if (!cliprdr_file_context_set_locally_available(_file, TRUE))
++		return false;
++
++	const CLIPRDR_FORMAT_LIST formatList = {
++		{ CB_FORMAT_LIST, 0, 0 },
++		1,
++		&format,
++	};
++
++	WLog_Print(_log, WLOG_DEBUG, "%" PRIuz " abgelegte Datei(en) werden angeboten", paths.size());
++
++	if (cliprdr_file_context_notify_new_client_format_list(_file) != CHANNEL_RC_OK)
++		return false;
++
++	WINPR_ASSERT(_ctx->ClientFormatList);
++	return _ctx->ClientFormatList(_ctx, &formatList) == CHANNEL_RC_OK;
++}
++
++bool sdlClip::waitForDropAck(uint32_t timeoutMs)
++{
++	return WaitForSingleObject(_drop_ack, timeoutMs) == WAIT_OBJECT_0;
++}
++
++void sdlClip::armServerFileWait()
++{
++	if (_server_files)
++		std::ignore = ResetEvent(_server_files);
++}
++
++std::vector<std::string> sdlClip::fetchServerFiles(uint32_t timeoutMs)
++{
++	std::vector<std::string> paths;
++
++	if (!_server_files || !_sdl)
++		return paths;
++
++	/* Auf die Formatliste des Gasts warten. Sie kommt im Kanal-Thread an,
++	 * hier darf deshalb keine Sperre gehalten werden. */
++	HANDLE hdl[2] = { freerdp_abort_event(_sdl->context()), _server_files };
++	if (WaitForMultipleObjects(ARRAYSIZE(hdl), hdl, FALSE, timeoutMs) != WAIT_OBJECT_0 + 1)
++	{
++		WLog_Print(_log, WLOG_DEBUG, "Gast bietet keine Dateien an");
++		return paths;
++	}
++
++	/* Die Dateiliste roh holen, wie es cliprdr_file_context_set_local_clipboard_data
++	 * auch tut. Das Clipboard-Ereignis dazu steht noch in der Warteschlange des
++	 * SDL-Threads, der hier blockiert. */
++	size_t size = 0;
++	auto data = ClipDataCb(this, s_type_FileGroupDescriptorW, &size);
++	if (!data || (size == 0))
++	{
++		WLog_Print(_log, WLOG_WARN, "Dateiliste des Gasts ist leer");
++		return paths;
++	}
++
++	/* Laedt alle Dateien herunter und liefert die lokalen Pfade, je Zeile einer.
++	 * Windows-Dateinamen enthalten keinen Zeilenumbruch. */
++	auto list = std::unique_ptr<char, decltype(&free)>(
++	    cliprdr_file_context_download_server_files(_file, data, size), free);
++	if (!list)
++	{
++		WLog_Print(_log, WLOG_WARN, "Dateien des Gasts nicht abgeholt");
++		return paths;
++	}
++
++	std::string_view all(list.get());
++	while (!all.empty())
++	{
++		const auto end = all.find('\n');
++		const auto line = all.substr(0, end);
++		if (!line.empty())
++			paths.emplace_back(line);
++		if (end == std::string_view::npos)
++			break;
++		all.remove_prefix(end + 1);
++	}
++
++	WLog_Print(_log, WLOG_DEBUG, "%" PRIuz " Datei(en) aus der Sitzung bereit", paths.size());
++	return paths;
++}
++
+ bool sdlClip::contains(const char** mime_types, Sint32 count)
+ {
+ 	for (Sint32 x = 0; x < count; x++)
+@@ -384,6 +541,10 @@ bool sdlClip::handleEvent(const SDL_ClipboardEvent& ev)
+ 		ClipboardLockGuard systemlock(_system);
+ 		std::scoped_lock lock(_lock);
+ 		clearServerFormats();
++		/* RemoteDesk: Eine echte Aenderung der Mac-Zwischenablage hebt ein zuvor
++		 * angebotenes Ablegen auf, sonst bekaeme der Gast weiter die alten
++		 * Dateien statt des frisch Kopierten. */
++		_drop_uri_list.clear();
+ 	}
+ 
+ 	const std::string mime_html = s_mime_html;
+@@ -798,6 +959,10 @@ UINT sdlClip::ReceiveServerFormatList(CliprdrClientContext* context,
+ 		clipboard->_current_mimetypes.emplace_back(s_mime_uri_list);
+ 		clipboard->_current_mimetypes.emplace_back(s_mime_gnome_copied_files);
+ 		clipboard->_current_mimetypes.emplace_back(s_mime_mate_copied_files);
++
++		/* RemoteDesk: weckt fetchServerFiles beim Ziehen aus der Sitzung. */
++		if (clipboard->_server_files)
++			std::ignore = SetEvent(clipboard->_server_files);
+ 	}
+ 	clipboard->_current_mimetypes.emplace_back(clipboard->_mime_uuid.c_str());
+ 
+@@ -831,7 +996,7 @@ UINT sdlClip::ReceiveServerFormatList(CliprdrClientContext* context,
+ 	return ret;
+ }
+ 
+-UINT sdlClip::ReceiveFormatListResponse(WINPR_ATTR_UNUSED CliprdrClientContext* context,
++UINT sdlClip::ReceiveFormatListResponse(CliprdrClientContext* context,
+                                         const CLIPRDR_FORMAT_LIST_RESPONSE* formatListResponse)
+ {
+ 	WINPR_ASSERT(context);
+@@ -839,6 +1004,14 @@ UINT sdlClip::ReceiveFormatListResponse(WINPR_ATTR_UNUSED CliprdrClientContext*
+ 
+ 	if (formatListResponse->common.msgFlags & CB_RESPONSE_FAIL)
+ 		WLog_WARN(TAG, "format list update failed");
++
++	/* RemoteDesk: Nach dem Ablegen wartet der SDL-Thread auf genau diese
++	 * Bestaetigung, bevor er Strg+V in die Sitzung schickt. */
++	auto clipboard = static_cast<sdlClip*>(
++	    cliprdr_file_context_get_context(static_cast<CliprdrFileContext*>(context->custom)));
++	if (clipboard && clipboard->_drop_ack)
++		std::ignore = SetEvent(clipboard->_drop_ack);
++
+ 	return CHANNEL_RC_OK;
+ }
+ 
+@@ -851,7 +1024,12 @@ std::shared_ptr<BYTE> sdlClip::getLocalData(uint32_t formatId, uint32_t& len)
+ 	/* The local clipboard still holds what this session received from the server (the
+ 	 * server asked before our format list reached it). Reading it through SDL would call
+ 	 * ClipDataCb and ask the server for its own data, so fail the request instead. */
+-	if (hasMime(offered, _mime_uuid.c_str()))
++	std::string dropped;
++	{
++		std::scoped_lock lock(_lock);
++		dropped = _drop_uri_list;
++	}
++	if (dropped.empty() && hasMime(offered, _mime_uuid.c_str()))
+ 	{
+ 		WLog_Print(_log, WLOG_DEBUG, "local clipboard holds server data, not answering request");
+ 		return {};
+@@ -955,7 +1133,14 @@ std::shared_ptr<BYTE> sdlClip::getLocalData(uint32_t formatId, uint32_t& len)
+ 		 * the channel thread needs the locks to deliver server data. */
+ 		size_t size = 0;
+ 		std::shared_ptr<void> sdldata;
+-		if (formatId == fileFormatId)
++		/* RemoteDesk: Abgelegte Dateien liegen nicht in der Zwischenablage des
++		 * Macs, sondern nur in _drop_uri_list. */
++		if ((formatId == fileFormatId) && !dropped.empty())
++		{
++			size = dropped.size();
++			sdldata = std::shared_ptr<void>(_strdup(dropped.c_str()), free);
++		}
++		else if (formatId == fileFormatId)
+ 			sdldata =
+ 			    std::shared_ptr<void>(cliprdr_file_context_get_local_uri_list(_file, &size), free);
+ 		if (!sdldata)
+diff --git a/client/SDL/SDL3/sdl_clip.hpp b/client/SDL/SDL3/sdl_clip.hpp
+index 73e5e71..9614e39 100644
+--- a/client/SDL/SDL3/sdl_clip.hpp
++++ b/client/SDL/SDL3/sdl_clip.hpp
+@@ -91,6 +91,30 @@ class sdlClip
+ 
+ 	[[nodiscard]] bool handleEvent(const SDL_ClipboardEvent& ev);
+ 
++	/* RemoteDesk: Ziehen und Fallenlassen vom Mac in die Sitzung. RDP kennt
++	 * dafuer keinen eigenen Kanal, der einzige Weg fuer Dateien ist cliprdr.
++	 * offerDroppedFiles kuendigt die abgelegten Dateien dem Gast als
++	 * FileGroupDescriptorW an, ohne die Zwischenablage des Macs anzuruehren:
++	 * gefragt wird spaeter allein die hier gemerkte Liste.
++	 */
++	[[nodiscard]] bool offerDroppedFiles(const std::vector<std::string>& paths);
++
++	/* Wartet auf die Bestaetigung der Formatliste durch den Gast. Erst danach
++	 * hat dessen Zwischenablage die Dateien, ein sofortiges Strg+V ginge ins
++	 * Leere. */
++	[[nodiscard]] bool waitForDropAck(uint32_t timeoutMs);
++
++	/* RemoteDesk: Gegenrichtung, Ziehen aus der Sitzung auf den Mac.
++	 *
++	 * armServerFileWait() muss vor dem Strg+C an den Gast laufen, sonst
++	 * koennte fetchServerFiles auf eine alte Formatliste hereinfallen.
++	 * fetchServerFiles() wartet auf die Formatliste des Servers, holt die
++	 * Dateien vollstaendig ab und gibt die lokalen Pfade zurueck. Es blockiert
++	 * und darf daher nur aus dem SDL-Thread gerufen werden.
++	 */
++	void armServerFileWait();
++	[[nodiscard]] std::vector<std::string> fetchServerFiles(uint32_t timeoutMs);
++
+ 	/* Answers the queued server CB_FORMAT_DATA_REQUESTs. Runs on the SDL main thread: the SDL
+ 	 * clipboard API is main-thread only, and ReceiveFormatDataRequest only queues them. */
+ 	void handleDataRequests();
+@@ -183,4 +207,11 @@ class sdlClip
+ 	bool _reading_server = false;
+ 	std::string _uuid;
+ 	std::string _mime_uuid;
++
++	/* RemoteDesk: Liste der per Ziehen abgelegten Dateien als "text/uri-list"
++	 * (guarded by _lock). Solange sie gefuellt ist, hat sie beim Format
++	 * FileGroupDescriptorW Vorrang vor der Zwischenablage des Macs. */
++	std::string _drop_uri_list;
++	HANDLE _drop_ack = nullptr;
++	HANDLE _server_files = nullptr;
+ };
+diff --git a/client/SDL/SDL3/sdl_context.cpp b/client/SDL/SDL3/sdl_context.cpp
+index 0c55ecb..12919d8 100644
+--- a/client/SDL/SDL3/sdl_context.cpp
++++ b/client/SDL/SDL3/sdl_context.cpp
+@@ -39,6 +39,17 @@
+ static constexpr auto sdl_allow_screensaver = "sdl-allow-screensaver";
+ static constexpr auto sdl_connection_dialog = "sdl-connection-dialog";
+ 
++/* RemoteDesk: in src/SDL/src/video/cocoa/SDL_cocoawindow.m ergaenzt. SDL hat
++ * keine oeffentliche Schnittstelle, um einen Ziehvorgang zu starten. */
++#if defined(__APPLE__)
++extern "C" bool RemoteDesk_StartFileDrag(SDL_Window* window, const char* const* paths, int count);
++#else
++static bool RemoteDesk_StartFileDrag(SDL_Window*, const char* const*, int)
++{
++	return false;
++}
++#endif
++
+ SdlContext::SdlContext(rdpContext* context)
+     : _context(context), _log(WLog_Get(CLIENT_TAG("SDL"))), _cursor(nullptr, sdl_Pointer_FreeCopy),
+       _rdpThreadRunning(false), _primary(nullptr, SDL_DestroySurface), _disp(this), _input(this),
+@@ -1041,7 +1052,8 @@ void SdlContext::updateMonitorDataFromOffsets()
+ 	}
+ }
+ 
+-bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects)
++bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects,
++                              bool present)
+ {
+ 	if (!isConnected())
+ 		return true;
+@@ -1081,7 +1093,10 @@ bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& re
+ 			return false;
+ 	}
+ 
+-	window.updateSurface();
++	if (present)
++		window.updateSurface();
++	else
++		_presentPending = true;
+ 	return true;
+ }
+ 
+@@ -1251,6 +1266,22 @@ static bool onWindowEdge(SDL_WindowID id, float x, float y)
+ 
+ bool SdlContext::handleEvent(const SDL_MouseMotionEvent& ev)
+ {
++	/* RemoteDesk: Ziehen aus der Sitzung auf den Mac. Siehe startDragOut(). */
++	if (!_rail.enabled() && _dragOutArmed && !_dragOutDone &&
++	    (SDL_GetModState() & SDL_KMOD_ALT) && (ev.state & SDL_BUTTON_LMASK))
++	{
++		auto window = getWindowForId(ev.windowID);
++		int w = 0;
++		int h = 0;
++		if (window && SDL_GetWindowSize(window->window(), &w, &h) &&
++		    ((ev.x < 0.0f) || (ev.y < 0.0f) || (ev.x >= static_cast<float>(w)) ||
++		     (ev.y >= static_cast<float>(h))))
++		{
++			_dragOutDone = true;
++			return startDragOut();
++		}
++	}
++
+ 	SDL_Event copy{};
+ 	copy.motion = ev;
+ 	/* SDL follows a release outside the window with a motion clamped to its edge: drop it. */
+@@ -1467,6 +1498,15 @@ bool SdlContext::handleEvent(const SDL_DisplayEvent& ev)
+ 
+ bool SdlContext::handleEvent(const SDL_MouseButtonEvent& ev)
+ {
++	/* RemoteDesk: nur ein Druck im Fenster kann in ein Herausziehen muenden. */
++	if (ev.button == SDL_BUTTON_LEFT)
++	{
++		_dragOutArmed = ev.down;
++		if (ev.down)
++			_dragOutDone = false;
++		_dragOutWindow = ev.windowID;
++	}
++
+ 	SDL_Event copy = {};
+ 	copy.button = ev;
+ 	if (_rail.enabled())
+@@ -1685,6 +1725,182 @@ SDL_FRect SdlContext::pixelToScreen(SDL_WindowID id, const SDL_FRect& pos, bool
+ 	return r;
+ }
+ 
++/* RemoteDesk: Ziehen und Fallenlassen vom Mac in die Sitzung.
++ *
++ * RDP kennt keinen Kanal fuer Ziehen und Fallenlassen -- der einzige Weg,
++ * Dateien in den Gast zu bringen, ist die Zwischenablage (cliprdr).  Deshalb
++ * wird beim Loslassen die Dateiliste dem Gast angeboten, der Zeiger an die
++ * Stelle des Loslassens gesetzt und dort Strg+V ausgeloest.  Fuer den Nutzer
++ * sieht das aus wie gewoehnliches Ablegen.
++ */
++bool SdlContext::handleEvent(const SDL_DropEvent& ev)
++{
++	switch (ev.type)
++	{
++		case SDL_EVENT_DROP_BEGIN:
++			_dropPaths.clear();
++			_dropWindow = ev.windowID;
++			return true;
++
++		case SDL_EVENT_DROP_POSITION:
++			_dropWindow = ev.windowID;
++			_dropX = ev.x;
++			_dropY = ev.y;
++			return true;
++
++		case SDL_EVENT_DROP_FILE:
++			if (ev.data)
++				_dropPaths.emplace_back(ev.data);
++			_dropWindow = ev.windowID;
++			_dropX = ev.x;
++			_dropY = ev.y;
++			return true;
++
++		case SDL_EVENT_DROP_COMPLETE:
++			return finishDrop();
++
++		default:
++			return true;
++	}
++}
++
++bool SdlContext::finishDrop()
++{
++	auto paths = std::move(_dropPaths);
++	_dropPaths.clear();
++
++	if (paths.empty())
++		return true;
++
++	if (!getWindowForId(_dropWindow))
++	{
++		WLog_Print(_log, WLOG_WARN, "Ablegen auf unbekanntem Fenster verworfen");
++		return true;
++	}
++
++	if (!getClipboardChannelContext().offerDroppedFiles(paths))
++		return true; /* nicht toedlich, die Sitzung laeuft weiter */
++
++	/* Erst wenn der Gast die Formatliste bestaetigt hat, liegen die Dateien in
++	 * seiner Zwischenablage.  Ein sofortiges Strg+V ginge ins Leere. */
++	if (!getClipboardChannelContext().waitForDropAck(3000))
++		WLog_Print(_log, WLOG_WARN, "Gast bestaetigt die Dateiliste nicht, versuche es dennoch");
++
++	/* Dieselbe Umrechnung wie bei echten Mausereignissen, sonst zeigt der
++	 * Gastzeiger bei skalierten Fenstern an die falsche Stelle. */
++	SDL_Event copy{};
++	copy.motion.type = SDL_EVENT_MOUSE_MOTION;
++	copy.motion.windowID = _dropWindow;
++	copy.motion.x = _dropX;
++	copy.motion.y = _dropY;
++	if (!eventToPixelCoordinates(_dropWindow, copy))
++		return true;
++	removeLocalScaling(copy.motion.x, copy.motion.y);
++	applyMonitorOffset(copy.motion.windowID, copy.motion.x, copy.motion.y);
++
++	const auto px = static_cast<INT32>(copy.motion.x);
++	const auto py = static_cast<INT32>(copy.motion.y);
++
++	/* Ein kurzer Klick setzt den Fokus im Gast auf das Fenster unter dem
++	 * Zeiger -- ohne ihn landete Strg+V im zuletzt aktiven Fenster. */
++	std::ignore = freerdp_client_send_button_event(common(), FALSE, PTR_FLAGS_MOVE, px, py);
++	std::ignore = freerdp_client_send_button_event(common(), FALSE,
++	                                               PTR_FLAGS_BUTTON1 | PTR_FLAGS_DOWN, px, py);
++	std::ignore = freerdp_client_send_button_event(common(), FALSE, PTR_FLAGS_BUTTON1, px, py);
++
++	/* Dem Gast Zeit lassen, den Fokus zu setzen. */
++	Sleep(150);
++
++	auto input = context()->input;
++	WINPR_ASSERT(input);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, TRUE, FALSE, RDP_SCANCODE_LCONTROL);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, TRUE, FALSE, RDP_SCANCODE_KEY_V);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_KEY_V);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_LCONTROL);
++
++	WLog_Print(_log, WLOG_DEBUG, "%" PRIuz " Datei(en) bei %d,%d abgelegt", paths.size(), px, py);
++	return true;
++}
++
++/* RemoteDesk: Ziehen aus der Sitzung auf den Mac.
++ *
++ * RDP verraet dem Client nicht, dass im Gast gezogen wird -- der Server sendet
++ * dazu nichts. Der Client muss die Absicht daher aus dem erkennen, was er
++ * selbst sieht: gedrueckte linke Maustaste, gedrueckte Wahltaste und ein
++ * Zeiger, der das Fenster verlaesst. Die Wahltaste ist Absicht: ohne sie
++ * wuerde jedes Herausfahren mit gedrueckter Taste (etwa beim Markieren von
++ * Text) den Vorgang ausloesen.
++ *
++ * Ablauf: im Gast das Ziehen mit Esc abbrechen, Maustaste loslassen, mit
++ * Strg+C kopieren, auf die Dateiliste warten und dann einen echten
++ * macOS-Ziehvorgang starten.
++ */
++bool SdlContext::startDragOut()
++{
++	auto& clip = getClipboardChannelContext();
++	clip.armServerFileWait();
++
++	auto input = context()->input;
++	WINPR_ASSERT(input);
++
++	/* Die Wahltaste haelt der Nutzer gedrueckt; im Gast muss sie weg, sonst
++	 * entstuende Alt+Esc beziehungsweise Alt+C. */
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_LMENU);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_RMENU);
++
++	/* Erst abbrechen, dann loslassen. Umgekehrt legte der Gast die Datei am
++	 * Fensterrand ab -- sie wuerde also verschoben. */
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, TRUE, FALSE, RDP_SCANCODE_ESCAPE);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_ESCAPE);
++	std::ignore = freerdp_client_send_button_event(common(), FALSE, PTR_FLAGS_BUTTON1, 0, 0);
++
++	Sleep(120);
++
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, TRUE, FALSE, RDP_SCANCODE_LCONTROL);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, TRUE, FALSE, RDP_SCANCODE_KEY_C);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_KEY_C);
++	std::ignore = freerdp_input_send_keyboard_event_ex(input, FALSE, FALSE, RDP_SCANCODE_LCONTROL);
++
++	/* Wartet auf die Formatliste des Gasts, danach holt ClipDataCb die Inhalte
++	 * ab (dafuer gelten eigene, weit groessere Fristen). Traege Gastsysteme
++	 * brauchen nach dem Strg+C durchaus ein paar Sekunden. */
++	auto paths = clip.fetchServerFiles(10000);
++	if (paths.empty())
++	{
++		WLog_Print(_log, WLOG_DEBUG, "Herausziehen ohne Dateien, nichts zu tun");
++		return true;
++	}
++
++	/* macOS kann einen Ziehvorgang nur beginnen, solange die Maustaste
++	 * gedrueckt ist. Bei grossen Dateien dauert das Abholen laenger, als der
++	 * Nutzer haelt -- dann still aufhoeren. Die Dateien liegen durch das
++	 * Strg+C ohnehin in der Zwischenablage und lassen sich einfuegen. */
++	if ((SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) == 0)
++	{
++		WLog_Print(_log, WLOG_INFO,
++		           "Maustaste vor dem Ende des Abholens losgelassen, kein Ziehvorgang; "
++		           "die Dateien liegen in der Zwischenablage");
++		return true;
++	}
++
++	auto window = getWindowForId(_dragOutWindow);
++	if (!window)
++		return true;
++
++	std::vector<const char*> raw;
++	raw.reserve(paths.size());
++	for (const auto& p : paths)
++		raw.push_back(p.c_str());
++
++	if (!RemoteDesk_StartFileDrag(window->window(), raw.data(),
++	                              static_cast<int>(raw.size())))
++		WLog_Print(_log, WLOG_WARN, "macOS nahm den Ziehvorgang nicht an");
++	else
++		WLog_Print(_log, WLOG_DEBUG, "%" PRIuz " Datei(en) werden gezogen", paths.size());
++
++	return true;
++}
++
+ bool SdlContext::handleEvent(const SDL_Event& ev)
+ {
+ 	if ((ev.type >= SDL_EVENT_DISPLAY_FIRST) && (ev.type <= SDL_EVENT_DISPLAY_LAST))
+@@ -1747,6 +1963,14 @@ bool SdlContext::handleEvent(const SDL_Event& ev)
+ 			const auto& cev = ev.key;
+ 			return getInputChannelContext().handleEvent(cev);
+ 		}
++		case SDL_EVENT_DROP_BEGIN:
++		case SDL_EVENT_DROP_FILE:
++		case SDL_EVENT_DROP_POSITION:
++		case SDL_EVENT_DROP_COMPLETE:
++		{
++			const auto& cev = ev.drop;
++			return handleEvent(cev);
++		}
+ 		default:
+ 			return true;
+ 	}
+@@ -1845,7 +2069,7 @@ bool SdlContext::useLocalScale() const
+ 	return !dynResize && !fs && !multimon;
+ }
+ 
+-bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects)
++bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects, bool present)
+ {
+ 	/* RAIL damage is per-window (_gfxDamage), not in the rects queue: repaint every tick. */
+ 	if (_rail.enabled())
+@@ -1889,13 +2113,29 @@ bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects)
+ 
+ 	for (auto& window : _windows)
+ 	{
+-		if (!drawToWindow(window.second, drawRects))
++		if (!drawToWindow(window.second, drawRects, present))
+ 			return false;
+ 	}
+ 
+ 	return true;
+ }
+ 
++/* RemoteDesk: Jedes SDL_RenderPresent wartet auf den Bildwechsel. Deshalb werden
++ * alle anstehenden Aktualisierungen zuerst gesammelt und erst danach einmal
++ * dargestellt. Ohne neue Bildinhalte waere das Darstellen nur eine weitere
++ * Wartezeit. */
++bool SdlContext::presentWindows()
++{
++	if (!_presentPending)
++		return true;
++	_presentPending = false;
++
++	for (auto& window : _windows)
++		window.second.updateSurface();
++
++	return true;
++}
++
+ BOOL SdlContext::desktopResize(rdpContext* context)
+ {
+ 	rdpGdi* gdi = nullptr;
+diff --git a/client/SDL/SDL3/sdl_context.hpp b/client/SDL/SDL3/sdl_context.hpp
+index 095afa4..590042f 100644
+--- a/client/SDL/SDL3/sdl_context.hpp
++++ b/client/SDL/SDL3/sdl_context.hpp
+@@ -114,8 +114,11 @@ class SdlContext
+ 	[[nodiscard]] bool updateWindowList();
+ 	[[nodiscard]] bool updateWindow(SDL_WindowID id);
+ 
+-	[[nodiscard]] bool drawToWindows(const std::vector<SDL_Rect>& rects = {});
+-	[[nodiscard]] bool drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects = {});
++	[[nodiscard]] bool drawToWindows(const std::vector<SDL_Rect>& rects = {},
++	                                 bool present = true);
++	[[nodiscard]] bool drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects = {},
++	                                bool present = true);
++	[[nodiscard]] bool presentWindows();
+ 	[[nodiscard]] bool minimizeAllWindows();
+ 	[[nodiscard]] int exitCode() const;
+ 	[[nodiscard]] SDL_PixelFormat pixelFormat() const;
+@@ -191,6 +194,12 @@ class SdlContext
+ 	[[nodiscard]] bool handleEvent(const SDL_MouseWheelEvent& ev);
+ 	[[nodiscard]] bool handleEvent(const SDL_TouchFingerEvent& ev);
+ 
++	/* RemoteDesk: Ziehen und Fallenlassen vom Mac in die Sitzung. */
++	[[nodiscard]] bool handleEvent(const SDL_DropEvent& ev);
++	[[nodiscard]] bool finishDrop();
++	/* RemoteDesk: Gegenrichtung, Ziehen aus der Sitzung auf den Mac. */
++	[[nodiscard]] bool startDragOut();
++
+ 	void addOrUpdateDisplay(SDL_DisplayID id);
+ 	void deleteDisplay(SDL_DisplayID id);
+ 
+@@ -263,6 +272,18 @@ class SdlContext
+ 
+ 	uint32_t _windowWidth = 0;
+ 	uint32_t _windowHeight = 0;
++
++	/* RemoteDesk: waehrend eines Ablegens gesammelte Dateien und die Stelle,
++	 * an der losgelassen wurde (in Fensterkoordinaten). */
++	std::vector<std::string> _dropPaths;
++	SDL_WindowID _dropWindow = 0;
++	float _dropX = 0.0f;
++	float _dropY = 0.0f;
++	bool _dragOutArmed = false;
++	bool _dragOutDone = false;
++	SDL_WindowID _dragOutWindow = 0;
++	/* RemoteDesk: gezeichnet, aber noch nicht dargestellt (presentWindows). */
++	bool _presentPending = false;
+ 	WinPREvent _windowsCreatedEvent;
+ 	std::thread _thread;
+ 	std::vector<COMMAND_LINE_ARGUMENT_A> _args;
+diff --git a/client/SDL/SDL3/sdl_freerdp.cpp b/client/SDL/SDL3/sdl_freerdp.cpp
+index f3eb055..dfb47d7 100644
+--- a/client/SDL/SDL3/sdl_freerdp.cpp
++++ b/client/SDL/SDL3/sdl_freerdp.cpp
+@@ -237,13 +237,19 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
+ 					break;
+ 					case SDL_EVENT_USER_UPDATE:
+ 					{
++						/* RemoteDesk: Die Warteschlange wird vollständig geleert und
++						 * erst am Ende ein einziges Mal dargestellt. Ein Present je
++						 * Paket würde je Bildaufbau vielfach auf den Bildwechsel
++						 * warten. */
+ 						std::vector<SDL_Rect> rectangles;
+ 						do
+ 						{
+ 							rectangles = sdl->pop();
+-							if (!sdl->drawToWindows(rectangles))
++							if (!sdl->drawToWindows(rectangles, false))
+ 								throw ErrorMsg{ -1, windowEvent.type, "sdl->drawToWindows" };
+ 						} while (!rectangles.empty());
++						if (!sdl->presentWindows())
++							throw ErrorMsg{ -1, windowEvent.type, "sdl->presentWindows" };
+ 					}
+ 					break;
+ 					case SDL_EVENT_USER_CREATE_WINDOWS:
+diff --git a/client/SDL/SDL3/sdl_window.cpp b/client/SDL/SDL3/sdl_window.cpp
+index c6260e7..b1f4475 100644
+--- a/client/SDL/SDL3/sdl_window.cpp
++++ b/client/SDL/SDL3/sdl_window.cpp
+@@ -820,6 +820,7 @@ SdlWindow SdlWindow::createPopup(SDL_Window* parent, const SDL_Rect& rect, bool
+ 	return SdlWindow{ parent, rect, transparent, tooltip };
+ }
+ 
++#if !defined(__APPLE__)
+ static SDL_Window* createDummy(SDL_DisplayID id)
+ {
+ 	const auto x = SDL_WINDOWPOS_CENTERED_DISPLAY(id);
+@@ -856,9 +857,16 @@ static SDL_Window* createDummy(SDL_DisplayID id)
+ 	}
+ 	return window;
+ }
++#endif
+ 
+ rdpMonitor SdlWindow::query(SDL_DisplayID id, bool forceAsPrimary)
+ {
++#if defined(__APPLE__)
++	/* RemoteDesk: Unter macOS wechselt das Vollbild-Messfenster in einen eigenen
++	 * Space, der ganze Bildschirm wird bei jedem Start kurz schwarz. Das Display
++	 * liefert dieselben Werte ohne Fenster. */
++	return queryDisplay(id, forceAsPrimary);
++#else
+ 	if (sdl::utils::isWaylandDriver() || sdl::utils::isX11Driver())
+ 		return queryDisplay(id, forceAsPrimary);
+ 
+@@ -877,10 +885,16 @@ rdpMonitor SdlWindow::query(SDL_DisplayID id, bool forceAsPrimary)
+ 		;
+ 
+ 	return query(window.get(), id, forceAsPrimary);
++#endif
+ }
+ 
+ SDL_Rect SdlWindow::rect(SDL_DisplayID id, bool forceAsPrimary)
+ {
++#if defined(__APPLE__)
++	/* RemoteDesk: siehe query(), kein Vollbild-Messfenster unter macOS. */
++	const auto monitor = queryDisplay(id, forceAsPrimary);
++	return { monitor.x, monitor.y, monitor.width, monitor.height };
++#else
+ 	std::unique_ptr<SDL_Window, void (*)(SDL_Window*)> window(createDummy(id), SDL_DestroyWindow);
+ 	if (!window)
+ 		return {};
+@@ -896,6 +910,7 @@ SDL_Rect SdlWindow::rect(SDL_DisplayID id, bool forceAsPrimary)
+ 		;
+ 
+ 	return rect(window.get(), forceAsPrimary);
++#endif
+ }
+ 
+ bool SdlWindow::tryFallback(bool isFullscreen)
+diff --git a/client/common/client_cliprdr_file.c b/client/common/client_cliprdr_file.c
+index f7b363d..c378bbe 100644
+--- a/client/common/client_cliprdr_file.c
++++ b/client/common/client_cliprdr_file.c
+@@ -3101,6 +3101,47 @@ BOOL cliprdr_file_context_set_local_clipboard_data(CliprdrFileContext* file,
+ #endif
+ }
+ 
++char* cliprdr_file_context_download_server_files(CliprdrFileContext* file, const void* data,
++                                                 size_t size)
++{
++	WINPR_ASSERT(file);
++
++#if defined(WITH_CLIPRDR_FILE_APPLE)
++	if (!file->context || !data || !apple_set_server_files(file, data, size))
++		return nullptr;
++
++	char* list = nullptr;
++	size_t len = 0;
++	for (size_t x = 0; x < file->apple_top_level_count; x++)
++	{
++		char* path = apple_provide_file(file, x);
++		if (!path)
++		{
++			free(list);
++			return nullptr;
++		}
++
++		char* next = nullptr;
++		size_t nlen = 0;
++		const int rc = list ? winpr_asprintf(&next, &nlen, "%s\n%s", list, path)
++		                    : winpr_asprintf(&next, &nlen, "%s", path);
++		free(path);
++		free(list);
++		if (rc < 0)
++			return nullptr;
++		list = next;
++		len = nlen;
++	}
++	WLog_Print(file->log, WLOG_DEBUG, "downloaded %" PRIuz " server files (%" PRIuz " bytes)",
++	           file->apple_top_level_count, len);
++	return list;
++#else
++	WINPR_UNUSED(data);
++	WINPR_UNUSED(size);
++	return nullptr;
++#endif
++}
++
+ char* cliprdr_file_context_get_local_uri_list(CliprdrFileContext* file, size_t* size)
+ {
+ 	WINPR_ASSERT(file);
+diff --git a/include/freerdp/client/client_cliprdr_file.h b/include/freerdp/client/client_cliprdr_file.h
+index 016ac14..9238975 100644
+--- a/include/freerdp/client/client_cliprdr_file.h
++++ b/include/freerdp/client/client_cliprdr_file.h
+@@ -168,6 +168,23 @@ extern "C"
+ 	FREERDP_API char* cliprdr_file_context_get_local_uri_list(CliprdrFileContext* file,
+ 	                                                          size_t* size);
+ 
++	/** \brief RemoteDesk: downloads all server files of a FileGroupDescriptorW list now
++	 *
++	 * Used to drag files out of the session: macOS needs finished local files when the
++	 * drag starts. Blocks until all contents arrived, call it from the main thread.
++	 *
++	 * \param file the file context
++	 * \param data the raw FileGroupDescriptorW data of the server
++	 * \param size the length of \b data
++	 *
++	 * \return the local paths of the top level entries, one per line, or \b nullptr.
++	 * Free with free().
++	 */
++	WINPR_ATTR_MALLOC(free, 1)
++	WINPR_ATTR_NODISCARD
++	FREERDP_API char* cliprdr_file_context_download_server_files(CliprdrFileContext* file,
++	                                                             const void* data, size_t size);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/scripts/bundle-mac-os.sh b/scripts/bundle-mac-os.sh
+index 6a83cb3..ebd4ab5 100755
+--- a/scripts/bundle-mac-os.sh
++++ b/scripts/bundle-mac-os.sh
+@@ -125,6 +125,7 @@ echo "build target [$DEPLOYMENT_TARGET]"
+ CMAKE_ARGS="-DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON \
+ 	-DCMAKE_VERBOSE_MAKEFILE=ON \
+ 	-DCMAKE_BUILD_TYPE=Release \
++	-DWITH_CLIENT_MAC=ON \
+  	-DWITH_MANPAGES=OFF \
+ 	-DBUILD_SHARED_LIBS=ON \
+ 	-DCMAKE_OSX_ARCHITECTURES=$CMAKE_ARCHS \
+@@ -159,6 +160,16 @@ then
+       git clone --depth 1 -b v2.0.3 https://github.com/mstorsjo/fdk-aac.git
+     fi
+ 
++    # RemoteDesk: eigener SDL-Patch. SDL gleicht die macOS-Zwischenablage sonst nur
++    # beim Fensterwechsel ab, wodurch in anderen Programmen kopierte Inhalte nie an
++    # den Server gemeldet werden. Muss nach dem Klonen laufen, damit ein frischer
++    # Quellbaum den Patch ebenfalls erhaelt.
++    if [ -n "${REMOTEDESK_SDL_PATCH:-}" ]; then
++      git -C "$SRC/SDL" checkout -- .
++      git -C "$SRC/SDL" apply "$REMOTEDESK_SDL_PATCH"
++      echo "Applied RemoteDesk SDL patch"
++    fi
++
+     if [ -d $INSTALL ]; then
+       rm -rf $INSTALL
+     fi

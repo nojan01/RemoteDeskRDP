@@ -290,7 +290,7 @@ export const en: Record<string, string> = {
   "license.modules.body":
     "<p>RemoteDeskRDP ships the following third-party components. The full licence text of each project is authoritative.</p>" +
     "<p><b>Apache-2.0</b></p>" +
-    "<ul><li><b>FreeRDP 3.26.0</b> – RDP protocol (<code>libfreerdp3</code>, <code>libfreerdp-client3</code>, <code>libwinpr3</code>, <code>libwinpr-tools3</code>, <code>libfreerdp-server3</code>, <code>libfreerdp-server-proxy3</code>, <code>libMacFreeRDP-library</code>)</li>" +
+    "<ul><li><b>FreeRDP 3.33.1</b> – RDP protocol (<code>libfreerdp3</code>, <code>libfreerdp-client3</code>, <code>libwinpr3</code>, <code>libwinpr-tools3</code>, <code>libfreerdp-server3</code>, <code>libfreerdp-server-proxy3</code>, <code>libMacFreeRDP-library</code>)</li>" +
     "<li><b>OpenSSL 3</b> – encryption (<code>libssl</code>, <code>libcrypto</code>)</li></ul>" +
     "<p><b>GNU LGPL 2.1 or later</b></p>" +
     "<ul><li><b>FFmpeg 8.0.1</b> – image scaling (<code>libavutil</code>, <code>libswscale</code>). Built without <code>--enable-gpl</code> and without <code>--enable-nonfree</code>, so the LGPL applies.</li>" +
@@ -327,24 +327,23 @@ export const en: Record<string, string> = {
 
   "license.freerdp.h": "Modified files in FreeRDP and SDL",
   "license.freerdp.body":
-    "<p>The Apache-2.0 licence requires modified files to be marked as such. RemoteDeskRDP modifies <b>13 files</b> in FreeRDP 3.26.0 and <b>3 files</b> in SDL 3.2.28:</p>" +
-    "<p><b>FreeRDP 3.26.0</b></p>" +
-    "<ul><li><code>scripts/bundle-mac-os.sh</code> – also builds the Cocoa client.</li>" +
-    "<li><code>client/Mac/Keyboard.m</code> – fixes a build error that only appears when the Cocoa client is built.</li>" +
+    "<p>The Apache-2.0 licence requires modified files to be marked as such. RemoteDeskRDP modifies <b>13 files</b> in FreeRDP 3.33.1 and <b>2 files</b> in SDL 3.2.28:</p>" +
+    "<p><b>FreeRDP 3.33.1</b></p>" +
+    "<ul><li><code>scripts/bundle-mac-os.sh</code> – also builds the Cocoa client and applies the SDL patch.</li>" +
     "<li><code>client/Mac/cli/MainMenu.xib</code> – removes the fixed window size of 1024 × 768.</li>" +
     "<li><code>client/Mac/cli/AppDelegate.h</code> – declaration for <code>mac_set_view_size</code>.</li>" +
     "<li><code>client/Mac/cli/AppDelegate.m</code> – lets the session view grow with the window.</li>" +
+    "<li><code>client/Mac/CMakeLists.txt</code> – fixes a link error of the Cocoa client in FreeRDP 3.33.</li>" +
     "<li><code>client/SDL/SDL3/sdl_freerdp.cpp</code> – presents once per frame instead of once per packet.</li>" +
     "<li><code>client/SDL/SDL3/sdl_context.cpp</code> and <code>.hpp</code> – separates drawing from presenting; accepts dropped files and detects dragging out.</li>" +
-    "<li><code>client/SDL/SDL3/sdl_window.cpp</code> – disables alpha blending on the frame textures; fixes banding at 24-bit and a black screen at 32-bit colour depth.</li>" +
-    "<li><code>client/SDL/SDL3/sdl_clip.cpp</code> and <code>.hpp</code> – reports the clipboard after connection setup, transfers files in both directions and handles drag and drop.</li>" +
-    "<li><code>client/common/client_cliprdr_file.c</code> – fetches files from the session without FUSE and fixes a percent-encoding bug in file names.</li>" +
-    "<li><code>include/freerdp/client/client_cliprdr_file.h</code> – adds <code>cliprdr_file_context_wait_for_files</code>.</li></ul>" +
+    "<li><code>client/SDL/SDL3/sdl_window.cpp</code> – measures the displays without a fullscreen probe window, which prevents the brief black screen at startup.</li>" +
+    "<li><code>client/SDL/SDL3/sdl_clip.cpp</code> and <code>.hpp</code> – handles drag and drop in both directions through the clipboard.</li>" +
+    "<li><code>client/common/client_cliprdr_file.c</code> – adds <code>cliprdr_file_context_download_server_files</code>, which downloads files from the session immediately.</li>" +
+    "<li><code>include/freerdp/client/client_cliprdr_file.h</code> – its declaration.</li></ul>" +
     "<p><b>SDL 3.2.28</b></p>" +
-    "<ul><li><code>src/video/cocoa/SDL_cocoaclipboard.m</code> – adds <code>text/uri-list</code> in both directions and resolves Finder file reference URLs.</li>" +
-    "<li><code>src/video/cocoa/SDL_cocoaevents.m</code> – polls the clipboard at a throttled rate and hides an empty window from the main nib.</li>" +
+    "<ul><li><code>src/video/cocoa/SDL_cocoaevents.m</code> – polls the clipboard at a throttled rate and hides an empty window from the main nib.</li>" +
     "<li><code>src/video/cocoa/SDL_cocoawindow.m</code> – makes it possible to start a macOS drag operation.</li></ul>" +
-    "<p>Two of the changes fix bugs in FreeRDP itself: the one in <code>client_cliprdr_file.c</code> is reported there as <b>FreeRDP/FreeRDP#13130</b>, the one in <code>sdl_window.cpp</code> also affects the current 3.30.0 release. All other changes are adaptations for RemoteDeskRDP. The complete changes are included as patch files.</p>",
+    "<p>Apart from the link error fix, all changes are adaptations for RemoteDeskRDP. The complete changes are included as patch files.</p>",
 
   // ─── Backend error messages ─────────────────────────────────────
   "err.profileNeedsIdAndName": "A profile needs an ID and a name.",

@@ -40,8 +40,8 @@ echo "Backend:    ${backend_app}"
 # Symlinks aufloesen, bevor signiert wird.
 #
 # Tauri kopiert `resources/` ohne Symlinks: aus `libfreerdp-client3.3.dylib ->
-# libfreerdp-client3.3.26.0.dylib` wird eine zweite echte Datei. Deren
-# Install-Name lautet weiter `libfreerdp-client3.3.26.0.dylib`. dyld verlangt
+# libfreerdp-client3.3.33.1.dylib` wird eine zweite echte Datei. Deren
+# Install-Name lautet weiter `libfreerdp-client3.3.33.1.dylib`. dyld verlangt
 # bei Hardened Runtime aber, dass der Dateiname zum angefragten Namen passt,
 # und bricht mit "Library missing" (SIGABRT beim Start) ab.
 #

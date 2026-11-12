@@ -2,6 +2,10 @@
 
 All notable changes to RemoteDeskRDP are documented here.
 
+## Unreleased
+
+- FreeRDP auf 3.33.1 aktualisiert. Bilddekodierung über VideoToolbox (Hardware), sicherere TLS-Vorgaben und zahlreiche Fehlerbehebungen. Das Kopieren von Dateien über die Zwischenablage übernimmt jetzt FreeRDP selbst; RemoteDeskRDP muss deutlich weniger Code anpassen (rund halb so viele Zeilen).
+
 ## 0.7.20 – 2026-10-25
 
 - Desklet-Verknüpfungen öffnen die registrierte App über ihre Bundle-ID statt
