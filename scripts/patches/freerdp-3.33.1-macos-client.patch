@@ -8,6 +8,8 @@ per `git checkout --` zurückgesetzt wurden.
 1. scripts/bundle-mac-os.sh
    Das Bundling-Skript baut den nativen Cocoa-Client nicht mit. Ergänzt
    -DWITH_CLIENT_MAC=ON, damit MacFreeRDP als Rückfall zur Verfügung steht.
+   -DWITH_RDPEUDP=ON schaltet die UDP-Übertragung (MS-RDPEUDP/RDPEMT) ein;
+   FreeRDP 3.33 führt sie als experimentell und baut sie sonst nicht mit.
    Ausserdem wendet es nach dem Klonen der Abhängigkeiten den SDL-Patch aus
    REMOTEDESK_SDL_PATCH an (siehe sdl-3.2.28-clipboard-poll.patch).
 
@@ -1048,18 +1050,19 @@ index 016ac14..9238975 100644
  }
  #endif
 diff --git a/scripts/bundle-mac-os.sh b/scripts/bundle-mac-os.sh
-index 6a83cb3..ebd4ab5 100755
+index 6a83cb3..5ea18b7 100755
 --- a/scripts/bundle-mac-os.sh
 +++ b/scripts/bundle-mac-os.sh
-@@ -125,6 +125,7 @@ echo "build target [$DEPLOYMENT_TARGET]"
+@@ -125,6 +125,8 @@ echo "build target [$DEPLOYMENT_TARGET]"
  CMAKE_ARGS="-DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON \
  	-DCMAKE_VERBOSE_MAKEFILE=ON \
  	-DCMAKE_BUILD_TYPE=Release \
 +	-DWITH_CLIENT_MAC=ON \
++	-DWITH_RDPEUDP=ON \
   	-DWITH_MANPAGES=OFF \
  	-DBUILD_SHARED_LIBS=ON \
  	-DCMAKE_OSX_ARCHITECTURES=$CMAKE_ARCHS \
-@@ -159,6 +160,16 @@ then
+@@ -159,6 +161,16 @@ then
        git clone --depth 1 -b v2.0.3 https://github.com/mstorsjo/fdk-aac.git
      fi
  

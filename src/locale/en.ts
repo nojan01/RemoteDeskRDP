@@ -329,7 +329,7 @@ export const en: Record<string, string> = {
   "license.freerdp.body":
     "<p>The Apache-2.0 licence requires modified files to be marked as such. RemoteDeskRDP modifies <b>13 files</b> in FreeRDP 3.33.1 and <b>2 files</b> in SDL 3.2.28:</p>" +
     "<p><b>FreeRDP 3.33.1</b></p>" +
-    "<ul><li><code>scripts/bundle-mac-os.sh</code> – also builds the Cocoa client and applies the SDL patch.</li>" +
+    "<ul><li><code>scripts/bundle-mac-os.sh</code> – also builds the Cocoa client and UDP transport and applies the SDL patch.</li>" +
     "<li><code>client/Mac/cli/MainMenu.xib</code> – removes the fixed window size of 1024 × 768.</li>" +
     "<li><code>client/Mac/cli/AppDelegate.h</code> – declaration for <code>mac_set_view_size</code>.</li>" +
     "<li><code>client/Mac/cli/AppDelegate.m</code> – lets the session view grow with the window.</li>" +

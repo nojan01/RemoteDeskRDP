@@ -22,16 +22,23 @@ Die Patchköpfe selbst gliedern nach Thema. Dieses Dokument gliedert nach
 
 ## Teil A — FreeRDP 3.33.1
 
-### `scripts/bundle-mac-os.sh` (+11 Zeilen)
+### `scripts/bundle-mac-os.sh` (+12 Zeilen)
 
-**Was:** Ergänzt `-DWITH_CLIENT_MAC=ON` in den CMake-Argumenten und wendet nach
-dem Klonen der Abhängigkeiten den SDL-Patch aus `REMOTEDESK_SDL_PATCH` an.
+**Was:** Ergänzt `-DWITH_CLIENT_MAC=ON` und `-DWITH_RDPEUDP=ON` in den
+CMake-Argumenten und wendet nach dem Klonen der Abhängigkeiten den SDL-Patch
+aus `REMOTEDESK_SDL_PATCH` an.
 
 **Warum:** Das Bundling-Skript baut den nativen Cocoa-Client nicht mit. Ohne
 diese Zeile entsteht nur `sdl-freerdp`, und `MacFreeRDP` stünde nicht als
 Rückfall zur Verfügung. Der SDL-Patch muss nach dem Klonen greifen, damit auch
 ein frischer Quellbaum ihn erhält; ein vorhandener SDL-Checkout wird vorher
 zurückgesetzt.
+
+`WITH_RDPEUDP` schaltet die UDP-Übertragung ein. FreeRDP 3.33 führt sie als
+experimentell und lehnt das UDP-Angebot des Servers ohne die Option ab
+(„declining UDP, built without -DWITH_RDPEUDP=ON“). Geprüft gegen Windows 11:
+Der Tunnel steht, die Grafik läuft über UDP. Im Profil lässt sich UDP
+weiterhin abschalten (`-multitransport`).
 
 Seit 3.33 legt das Skript Quellen, Bau und Ergebnis unter `build-macos/` ab.
 
@@ -236,8 +243,8 @@ Umfang laut `git diff --stat` in beiden Quellbäumen:
 
 | Datei | Umfang | Grund in einem Satz |
 |---|---|---|
-| **FreeRDP** | **+618 / −15** | |
-| `scripts/bundle-mac-os.sh` | +11 | Cocoa-Client mitbauen, SDL-Patch anwenden |
+| **FreeRDP** | **+619 / −15** | |
+| `scripts/bundle-mac-os.sh` | +12 | Cocoa-Client und UDP mitbauen, SDL-Patch anwenden |
 | `client/Mac/cli/MainMenu.xib` | 3 | Fenster war auf 1024×768 festgenagelt |
 | `client/Mac/cli/AppDelegate.h` | +1 | Deklaration zu `mac_set_view_size` |
 | `client/Mac/cli/AppDelegate.m` | 40 | Ansicht wuchs nicht mit dem Fenster mit |
